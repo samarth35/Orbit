@@ -2,7 +2,7 @@
 
 Orbit is a social lock-in productivity app: tasks, notes, calendar blocks, focus sessions, groups, and score-based leaderboards in one dark-first command center.
 
-It runs as a React + Vite frontend served by a FastAPI backend, with SQLite persistence for the current version.
+It runs as a React + Vite frontend served by a FastAPI backend. Local development falls back to SQLite; production can use Postgres through `DATABASE_URL`.
 
 ## Features
 
@@ -18,7 +18,7 @@ It runs as a React + Vite frontend served by a FastAPI backend, with SQLite pers
 
 - React 18 + Vite
 - FastAPI + Uvicorn
-- SQLite
+- SQLite locally, Postgres in production
 - Motion, GSAP, OGL, Lucide icons
 
 ## Local Setup
@@ -75,6 +75,7 @@ Required for deployment:
 ```env
 ORBIT_PUBLIC_BASE_URL=https://your-domain.com
 ORBIT_SESSION_SECRET=use_a_long_random_secret
+DATABASE_URL=postgresql://user:password@host:5432/database
 ORBIT_GOOGLE_CLIENT_ID=your_google_client_id
 ORBIT_GOOGLE_CLIENT_SECRET=your_google_client_secret
 ORBIT_GOOGLE_REDIRECT_URI=https://your-domain.com/api/auth/google/callback
@@ -114,34 +115,48 @@ https://your-domain.com/api/auth/google/callback
 
 ## Deploy For Users
 
-Orbit is easiest to deploy as one Docker web service. The included `Dockerfile` builds the React app, installs FastAPI dependencies, and serves everything from one container.
+Orbit is easiest to deploy as one Docker web service plus a hosted Postgres database. The included `Dockerfile` builds the React app, installs FastAPI dependencies, and serves everything from one container.
 
 ### Recommended Hosting Shape
 
 - One web service/container.
-- One persistent disk/volume mounted at:
+- One hosted Postgres database, such as Neon, Supabase, Railway Postgres, or Render Postgres.
+- `DATABASE_URL` set on the web service.
+- HTTPS enabled by the platform.
+- One app instance is still recommended for V1 scoring/session simplicity.
 
-```text
-/app/data
+If `DATABASE_URL` is missing, Orbit uses local SQLite at `data/orbit.sqlite3`. That is good for local development but not reliable on free ephemeral hosts.
+
+### Free Render + Neon Postgres
+
+1. Create a free Neon Postgres project.
+2. Copy Neon connection string. Use the pooled connection string if Neon provides one.
+3. Push this repo to GitHub.
+4. Create a new Render Web Service from the GitHub repo.
+5. Choose Docker deployment.
+6. Add environment variables:
+
+```env
+DATABASE_URL=postgresql://user:password@host/database?sslmode=require
+ORBIT_SESSION_SECRET=use_a_long_random_secret
+ORBIT_PUBLIC_BASE_URL=https://your-render-url
+ORBIT_GOOGLE_REDIRECT_URI=https://your-render-url/api/auth/google/callback
+ORBIT_GOOGLE_CLIENT_ID=your_google_client_id
+ORBIT_GOOGLE_CLIENT_SECRET=your_google_client_secret
 ```
 
-- HTTPS enabled by the platform.
-- Do not run multiple replicas while using SQLite. If you need horizontal scaling later, move persistence to Postgres.
+7. Deploy.
+8. Add the same Render callback URL in Google Cloud Console.
 
 ### Render
 
 1. Push this repo to GitHub.
 2. Create a new Render Web Service from the GitHub repo.
 3. Choose Docker deployment.
-4. Add a persistent disk mounted at:
-
-```text
-/app/data
-```
-
-5. Add the environment variables listed above.
+4. Add `DATABASE_URL` from your hosted Postgres provider.
+5. Add the other environment variables listed above.
 6. Deploy.
-7. Copy the public Render URL into:
+7. Copy the public Render URL into your environment variables:
 
 ```env
 ORBIT_PUBLIC_BASE_URL=https://your-render-url
@@ -154,12 +169,7 @@ ORBIT_GOOGLE_REDIRECT_URI=https://your-render-url/api/auth/google/callback
 
 1. Create a Railway project from the GitHub repo.
 2. Let Railway build from the Dockerfile.
-3. Add a persistent volume mounted at:
-
-```text
-/app/data
-```
-
+3. Add a Railway Postgres database or an external Postgres `DATABASE_URL`.
 4. Add the environment variables listed above.
 5. Deploy and use the generated HTTPS domain.
 6. Add that domain and callback URL in Google Cloud Console.
@@ -172,11 +182,19 @@ Build locally:
 docker build -t orbit .
 ```
 
-Run locally:
+Run locally with SQLite fallback:
 
 ```bash
-docker run --rm -p 8000:8000 --env-file .env -v orbit-data:/app/data orbit
+docker run --rm -p 8000:8000 --env-file .env orbit
 ```
+
+Run locally with Postgres:
+
+```bash
+docker run --rm -p 8000:8000 --env-file .env orbit
+```
+
+Set `DATABASE_URL` in `.env` for Postgres mode.
 
 Open:
 
@@ -225,5 +243,5 @@ git push
 
 - `.env`, SQLite files, `node_modules`, `dist`, `.venv`, and local Codex folders are ignored.
 - Keep `ORBIT_SESSION_SECRET` private and unique per deployment.
-- SQLite is fine for the first public test. Use a persistent disk so user data survives redeploys.
-- For production teams or high traffic, migrate from SQLite to Postgres before scaling.
+- SQLite is local fallback only.
+- Use Postgres for public deployments so users, groups, tasks, sessions, and scores survive redeploys.

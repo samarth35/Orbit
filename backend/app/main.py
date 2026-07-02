@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import cookie_secure, load_dotenv, oauth_env, public_base_url
+from .config import cookie_secure, database_url, load_dotenv, oauth_env, public_base_url
 from .models import (
     AuthHandleCreate,
     EventCreate,
@@ -33,6 +33,7 @@ from .models import (
     UserPatch,
 )
 from .services import OrbitService
+from .postgres_store import PostgresStateStore
 from .sqlite_store import SqliteStateStore
 
 
@@ -41,7 +42,7 @@ DIST_ROOT = PROJECT_ROOT / "dist"
 DATA_PATH = PROJECT_ROOT / "data" / "orbit.sqlite3"
 
 load_dotenv()
-store = SqliteStateStore(DATA_PATH)
+store = PostgresStateStore(database_url()) if database_url() else SqliteStateStore(DATA_PATH)
 service = OrbitService(store)
 
 app = FastAPI(title="Orbit API", version="1.0.0")

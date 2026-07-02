@@ -40,6 +40,10 @@ def public_base_url() -> str:
     return os.getenv("ORBIT_PUBLIC_BASE_URL", "http://127.0.0.1:4174").rstrip("/")
 
 
+def database_url() -> str:
+    return os.getenv("DATABASE_URL", "").strip()
+
+
 def session_secret() -> str:
     return os.getenv("ORBIT_SESSION_SECRET", "orbit-dev-session-secret-change-me")
 
