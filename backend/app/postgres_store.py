@@ -75,7 +75,7 @@ def normalize_database_url(value: str) -> str:
 
 def translate_sql(sql: str) -> str:
     clean = " ".join(sql.strip().split())
-    translated = sql.replace("?", "%s")
+    translated = sql.replace("%", "%%").replace("?", "%s")
 
     if clean.startswith("INSERT OR IGNORE INTO group_members"):
         return translated.replace("INSERT OR IGNORE INTO", "INSERT INTO", 1) + " ON CONFLICT(group_id, user_id) DO NOTHING"
