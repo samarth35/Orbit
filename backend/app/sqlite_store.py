@@ -231,10 +231,11 @@ class SqliteStateStore:
                 "displayName": (display_name or handle).strip() or handle,
                 "createdAt": now_iso(),
                 "timezone": timezone_name or "Asia/Calcutta",
+                "isGuest": False,
             }
             connection.execute(
-                "INSERT INTO users(id, handle, display_name, created_at, timezone) VALUES(?, ?, ?, ?, ?)",
-                (user["id"], user["handle"], user["displayName"], user["createdAt"], user["timezone"]),
+                "INSERT INTO users(id, handle, display_name, created_at, timezone, is_guest) VALUES(?, ?, ?, ?, ?, ?)",
+                (user["id"], user["handle"], user["displayName"], user["createdAt"], user["timezone"], 0),
             )
             state = default_state()
             state.tasks = []
@@ -260,10 +261,11 @@ class SqliteStateStore:
                 "displayName": "Guest",
                 "createdAt": now_iso(),
                 "timezone": timezone_name or "Asia/Calcutta",
+                "isGuest": True,
             }
             connection.execute(
-                "INSERT INTO users(id, handle, display_name, created_at, timezone) VALUES(?, ?, ?, ?, ?)",
-                (user["id"], user["handle"], user["displayName"], user["createdAt"], user["timezone"]),
+                "INSERT INTO users(id, handle, display_name, created_at, timezone, is_guest) VALUES(?, ?, ?, ?, ?, ?)",
+                (user["id"], user["handle"], user["displayName"], user["createdAt"], user["timezone"], 1),
             )
             state = default_state()
             state.tasks = []
@@ -486,8 +488,8 @@ class SqliteStateStore:
                     user_id = secure_id("usr")
                     created_at = now_iso()
                     connection.execute(
-                        "INSERT INTO users(id, handle, display_name, created_at, timezone) VALUES(?, ?, ?, ?, ?)",
-                        (user_id, handle, display_name, created_at, "Asia/Calcutta"),
+                        "INSERT INTO users(id, handle, display_name, created_at, timezone, is_guest) VALUES(?, ?, ?, ?, ?, ?)",
+                        (user_id, handle, display_name, created_at, "Asia/Calcutta", 0),
                     )
                     state_model = default_state()
                     state_model.tasks = []
@@ -598,11 +600,16 @@ class SqliteStateStore:
                     SELECT users.* FROM users
                     JOIN group_members ON group_members.user_id = users.id
                     WHERE group_members.group_id = ?
+                      AND users.id <> ?
+                      AND COALESCE(users.is_guest, 0) = 0
                     """,
-                    (group_id,),
+                    (group_id, DEFAULT_USER_ID),
                 ).fetchall()
             else:
-                rows = connection.execute("SELECT * FROM users ORDER BY created_at").fetchall()
+                rows = connection.execute(
+                    "SELECT * FROM users WHERE id <> ? AND COALESCE(is_guest, 0) = 0 ORDER BY created_at",
+                    (DEFAULT_USER_ID,),
+                ).fetchall()
             entries = []
             for row in rows:
                 user = dict(row)
@@ -1024,7 +1031,8 @@ class SqliteStateStore:
                     handle TEXT UNIQUE NOT NULL,
                     display_name TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    timezone TEXT NOT NULL
+                    timezone TEXT NOT NULL,
+                    is_guest INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS auth_accounts (
                     id TEXT PRIMARY KEY,
@@ -1120,7 +1128,22 @@ class SqliteStateStore:
                 CREATE INDEX IF NOT EXISTS idx_focus_sessions_user_time ON focus_sessions(user_id, started_at);
                 """
             )
+            self._ensure_user_guest_column(connection)
             self._ensure_seed(connection)
+
+    def _ensure_user_guest_column(self, connection: sqlite3.Connection) -> None:
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(users)").fetchall()}
+        if "is_guest" not in columns:
+            connection.execute("ALTER TABLE users ADD COLUMN is_guest INTEGER NOT NULL DEFAULT 0")
+        connection.execute(
+            """
+            UPDATE users
+            SET is_guest = 1
+            WHERE id <> ?
+              AND (LOWER(handle) LIKE 'guest-%' OR LOWER(display_name) = 'guest')
+            """,
+            (DEFAULT_USER_ID,),
+        )
 
     def _ensure_seed(self, connection: sqlite3.Connection) -> None:
         user_count = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
@@ -1129,13 +1152,14 @@ class SqliteStateStore:
         state = self.read_legacy_state(connection)
         created_at = now_iso()
         connection.execute(
-            "INSERT INTO users(id, handle, display_name, created_at, timezone) VALUES(?, ?, ?, ?, ?)",
+            "INSERT INTO users(id, handle, display_name, created_at, timezone, is_guest) VALUES(?, ?, ?, ?, ?, ?)",
             (
                 DEFAULT_USER_ID,
                 clean_handle(state.profile.handle),
                 state.profile.name or state.profile.handle or "Samarth Mishra",
                 created_at,
                 state.profile.timezone or "Asia/Calcutta",
+                0,
             ),
         )
         self._replace_user_state(connection, DEFAULT_USER_ID, state)
@@ -1176,8 +1200,8 @@ class SqliteStateStore:
         state = default_state()
         created_at = now_iso()
         connection.execute(
-            "INSERT INTO users(id, handle, display_name, created_at, timezone) VALUES(?, ?, ?, ?, ?)",
-            (DEFAULT_USER_ID, state.profile.handle, state.profile.name, created_at, state.profile.timezone),
+            "INSERT INTO users(id, handle, display_name, created_at, timezone, is_guest) VALUES(?, ?, ?, ?, ?, ?)",
+            (DEFAULT_USER_ID, state.profile.handle, state.profile.name, created_at, state.profile.timezone, 0),
         )
         self._replace_user_state(connection, DEFAULT_USER_ID, state)
         connection.commit()
@@ -1190,12 +1214,16 @@ class SqliteStateStore:
         }
 
     def _user_row(self, row: sqlite3.Row) -> dict[str, Any]:
+        columns = set(row.keys()) if hasattr(row, "keys") else set()
+        inferred_guest = str(row["handle"]).lower().startswith("guest-") or str(row["display_name"]).lower() == "guest"
+        is_guest = bool(row["is_guest"]) if "is_guest" in columns else inferred_guest
         return {
             "id": row["id"],
             "handle": row["handle"],
             "displayName": row["display_name"],
             "createdAt": row["created_at"],
             "timezone": row["timezone"],
+            "isGuest": is_guest,
         }
 
     def _read_user_state(self, connection: sqlite3.Connection, user_id: str) -> OrbitState:

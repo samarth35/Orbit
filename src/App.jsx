@@ -518,12 +518,19 @@ export default function App() {
 
   useEffect(() => {
     if (!currentUser) return;
-    const loadLeaderboard = leaderboardScope === 'group' && activeGroup
+    if (leaderboardScope === 'group' && !activeGroup) {
+      setLeaderboard([]);
+      return;
+    }
+    const loadLeaderboard = leaderboardScope === 'group'
       ? getGroupLeaderboard(activeGroup.id, leaderboardPeriod)
       : getGlobalLeaderboard(leaderboardPeriod);
     loadLeaderboard
       .then(setLeaderboard)
-      .catch(() => setBackendStatus('offline'));
+      .catch(() => {
+        setLeaderboard([]);
+        setBackendStatus('offline');
+      });
   }, [activeGroup, currentUser, leaderboardPeriod, leaderboardScope]);
 
   useEffect(() => {
@@ -597,7 +604,11 @@ export default function App() {
   };
 
   const refreshLeaderboard = useCallback((period = leaderboardPeriod, scope = leaderboardScope, group = activeGroup) => {
-    const request = scope === 'group' && group
+    if (scope === 'group' && !group) {
+      setLeaderboard([]);
+      return Promise.resolve([]);
+    }
+    const request = scope === 'group'
       ? getGroupLeaderboard(group.id, period)
       : getGlobalLeaderboard(period);
     return request
@@ -606,6 +617,7 @@ export default function App() {
         return rows;
       })
       .catch(() => {
+        setLeaderboard([]);
         setBackendStatus('offline');
         return [];
       });
@@ -1890,23 +1902,20 @@ function GroupsPage({
         ...groupMembers,
       ]
     : groupMembers;
-  const visibleLeaderboard = leaderboard.length
-    ? leaderboard
-    : currentUser
-      ? [{
-          userId: currentUser.id,
-          handle: currentUser.handle,
-          displayName: currentUser.displayName,
-          rank: 1,
-          score: 0,
-          trustScore: 100,
-          validFocusMinutes: 0,
-          completedTaskWeight: 0,
-          scoredTaskWeight: 0,
-          suspiciousCount: 0,
-          validation: activeGroup ? 'Awaiting score' : 'No score yet',
-        }]
-      : [];
+  const visibleLeaderboard = leaderboard;
+  const groupLeaderboardLocked = leaderboardScope === 'group' && !activeGroup;
+  const leaderboardEmptyTitle = groupLeaderboardLocked
+    ? 'Join a group to unlock ranks'
+    : leaderboardScope === 'group'
+      ? 'No scored members yet'
+      : 'No public ranks yet';
+  const leaderboardEmptyCopy = groupLeaderboardLocked
+    ? 'Create a crew or enter an invite code first. Group boards only show members of your selected crew.'
+    : leaderboardScope === 'group'
+      ? 'Members will appear here after validated tasks or focus sessions update their score.'
+      : currentUser?.isGuest
+        ? 'Guest sessions can use Orbit, but they stay out of public rankings.'
+        : 'Complete scoreable work to appear on the global board.';
 
   return (
     <div className="page-surface groups-page">
@@ -2043,8 +2052,8 @@ function GroupsPage({
             )) : (
               <div className="leaderboard-empty-card">
                 <UsersRound size={24} />
-                <strong>No ranks yet</strong>
-                <p>Create a group or complete scoreable work to appear here.</p>
+                <strong>{leaderboardEmptyTitle}</strong>
+                <p>{leaderboardEmptyCopy}</p>
               </div>
             )}
           </div>

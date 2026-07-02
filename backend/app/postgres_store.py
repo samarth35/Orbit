@@ -122,7 +122,8 @@ class PostgresStateStore(SqliteStateStore):
                     handle TEXT UNIQUE NOT NULL,
                     display_name TEXT NOT NULL,
                     created_at TEXT NOT NULL,
-                    timezone TEXT NOT NULL
+                    timezone TEXT NOT NULL,
+                    is_guest INTEGER NOT NULL DEFAULT 0
                 )
                 """,
                 """
@@ -243,6 +244,16 @@ class PostgresStateStore(SqliteStateStore):
             ]
             for statement in statements:
                 connection.execute(statement)
+            connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_guest INTEGER NOT NULL DEFAULT 0")
+            connection.execute(
+                """
+                UPDATE users
+                SET is_guest = 1
+                WHERE id <> ?
+                  AND (LOWER(handle) LIKE 'guest-%' OR LOWER(display_name) = 'guest')
+                """,
+                (DEFAULT_USER_ID,),
+            )
             self._ensure_seed(connection)
 
     def _ensure_seed(self, connection) -> None:
@@ -253,13 +264,14 @@ class PostgresStateStore(SqliteStateStore):
         created_at = now_iso()
         handle = clean_handle(state.profile.handle)
         connection.execute(
-            "INSERT INTO users(id, handle, display_name, created_at, timezone) VALUES(?, ?, ?, ?, ?)",
+            "INSERT INTO users(id, handle, display_name, created_at, timezone, is_guest) VALUES(?, ?, ?, ?, ?, ?)",
             (
                 DEFAULT_USER_ID,
                 handle,
                 state.profile.name or state.profile.handle or "Orbit User",
                 created_at,
                 state.profile.timezone or "Asia/Calcutta",
+                0,
             ),
         )
         state.profile.handle = handle

@@ -1831,6 +1831,8 @@ textarea {
 .leaderboard-panel {
   display: grid;
   gap: 12px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .group-active-card {
@@ -2108,10 +2110,12 @@ textarea {
   align-content: start;
   gap: 9px;
   min-height: 0;
+  min-width: 0;
 }
 
 .leaderboard-row-glow {
   display: block;
+  min-width: 0;
 }
 
 .leaderboard-row {
@@ -2123,6 +2127,7 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: color-mix(in srgb, var(--panel-strong) 42%, transparent);
+  min-width: 0;
 }
 
 .leaderboard-row-glow .leaderboard-row {
@@ -2196,6 +2201,22 @@ textarea {
   font-style: italic;
   font-weight: 560;
   letter-spacing: 0.01em;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.leaderboard-row > div {
+  min-width: 0;
+}
+
+.leaderboard-row > div > strong {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .leaderboard-score {
@@ -2790,6 +2811,7 @@ textarea {
 
   .leaderboard-toolbar,
   .joined-groups article {
+    grid-template-columns: 1fr;
     align-items: stretch;
     flex-direction: column;
   }
@@ -2803,6 +2825,7 @@ textarea {
 
   .leaderboard-row {
     grid-template-columns: 42px minmax(0, 1fr);
+    align-items: start;
   }
 
   .leaderboard-score {
@@ -3259,5 +3282,10 @@ textarea {
   .period-select-shell {
     width: 100%;
     min-width: 0;
+    max-width: 100%;
+  }
+
+  .groups-page {
+    padding-bottom: 96px;
   }
 }
