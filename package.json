@@ -1,0 +1,25 @@
+{
+  "name": "orbit-command-center",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "serve": ".venv\\Scripts\\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 4174",
+    "serve:4173": ".venv\\Scripts\\python.exe -m uvicorn backend.app.main:app --host 127.0.0.1 --port 4173",
+    "backend:check": ".venv\\Scripts\\python.exe -m backend.check"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "gsap": "^3.12.5",
+    "lucide-react": "^0.468.0",
+    "motion": "^11.15.0",
+    "ogl": "^1.0.11",
+    "vite": "^6.0.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {}
+}

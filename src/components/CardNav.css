@@ -1,0 +1,320 @@
+.card-nav-container {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(760px, calc(100vw - 32px));
+  z-index: 35;
+  box-sizing: border-box;
+}
+
+.card-nav {
+  display: block;
+  height: 64px;
+  padding: 0;
+  border: 1px solid rgba(238, 225, 255, 0.11);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(25, 24, 34, 0.54), rgba(12, 11, 17, 0.42)),
+    var(--panel);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.24), 0 0 0 1px rgba(255, 255, 255, 0.02) inset;
+  position: relative;
+  overflow: hidden;
+  will-change: height;
+  backdrop-filter: blur(34px) saturate(1.18);
+}
+
+.card-nav::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 10% 10%, rgba(139, 92, 246, 0.12), transparent 28%),
+    radial-gradient(circle at 88% 0%, rgba(196, 181, 253, 0.08), transparent 30%);
+  opacity: 0.78;
+  pointer-events: none;
+}
+
+.card-nav-top {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 64px;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px 9px 12px;
+  z-index: 2;
+}
+
+.hamburger-menu {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  gap: 6px;
+  border: 1px solid rgba(238, 225, 255, 0.13);
+  border-radius: 12px;
+  background: rgba(12, 11, 17, 0.42);
+}
+
+.hamburger-line {
+  width: 21px;
+  height: 1.5px;
+  background-color: currentColor;
+  opacity: 0.86;
+  transition: transform 0.25s ease, opacity 0.2s ease;
+  transform-origin: 50% 50%;
+}
+
+.hamburger-menu.open .hamburger-line:first-child {
+  transform: translateY(3.75px) rotate(45deg);
+}
+
+.hamburger-menu.open .hamburger-line:last-child {
+  transform: translateY(-3.75px) rotate(-45deg);
+}
+
+.logo-container {
+  position: static;
+  justify-self: center;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+.orbit-mark {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: #fff8ef;
+  border: 1px solid rgba(196, 181, 253, 0.26);
+  background:
+    radial-gradient(circle at 50% 15%, rgba(139, 92, 246, 0.22), transparent 56%),
+    rgba(17, 16, 24, 0.58);
+  box-shadow: 0 0 26px rgba(139, 92, 246, 0.12);
+  font-weight: 620;
+}
+
+.orbit-logotype {
+  font-family: var(--font-editorial);
+  font-size: 15px;
+  font-style: italic;
+  font-weight: 600;
+  letter-spacing: 0.012em;
+}
+
+.card-nav-cta-button {
+  border: 1px solid rgba(238, 225, 255, 0.13);
+  border-radius: 12px;
+  padding: 0 16px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 560;
+  cursor: pointer;
+  background:
+    linear-gradient(180deg, rgba(31, 30, 42, 0.64), rgba(17, 16, 24, 0.52));
+  transition: transform 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card-nav-cta-button svg {
+  stroke-width: 2;
+  color: var(--violet-soft);
+}
+
+.card-nav-cta-button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(196, 181, 253, 0.32);
+  box-shadow: 0 0 24px rgba(139, 92, 246, 0.12);
+}
+
+.card-nav-content {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 64px;
+  bottom: 0;
+  padding: 10px;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.card-nav.open .card-nav-content {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.nav-card {
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 14px;
+  border: 1px solid rgba(238, 225, 255, 0.13);
+  display: flex;
+  flex-direction: column;
+  padding: 14px;
+  gap: 10px;
+  user-select: none;
+  overflow: hidden;
+  box-shadow: inset 0 0 28px rgba(255, 255, 255, 0.025);
+}
+
+.nav-card-label {
+  font-family: var(--font-editorial);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 20px;
+  letter-spacing: 0.01em;
+}
+
+.nav-card-links {
+  margin-top: auto;
+  display: grid;
+  gap: 7px;
+}
+
+.nav-card-link {
+  min-height: 30px;
+  width: 100%;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  color: inherit;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0 10px;
+  text-align: left;
+}
+
+.nav-card-link:hover,
+.nav-card-link.active {
+  background: rgba(196, 181, 253, 0.14);
+  transform: translateY(-1px);
+}
+
+@media (max-width: 780px) {
+  .card-nav-container {
+    top: 10px;
+    width: calc(100vw - 20px);
+  }
+
+  .card-nav-top {
+    grid-template-columns: 44px minmax(0, 1fr);
+    grid-template-areas: "menu logo";
+    align-items: center;
+  }
+
+  .hamburger-menu {
+    grid-area: menu;
+    justify-self: start;
+    flex: 0 0 auto;
+  }
+
+  .card-nav-cta-button {
+    display: none;
+  }
+
+  .logo-container {
+    grid-area: logo;
+    position: static;
+    transform: none;
+    justify-self: start;
+    width: fit-content;
+    max-width: 100%;
+    overflow: hidden;
+    padding-left: 2px;
+  }
+
+  .orbit-logotype {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .card-nav-content {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .nav-card {
+    min-height: 104px;
+  }
+}
+
+@media (max-width: 560px) {
+  .card-nav-container {
+    top: 8px;
+    width: calc(100vw - 14px);
+  }
+
+  .card-nav,
+  .card-nav-top {
+    height: 58px;
+    border-radius: 13px;
+  }
+
+  .card-nav-top {
+    grid-template-columns: 40px minmax(0, 1fr);
+    grid-template-areas: "menu logo";
+    gap: 8px;
+    padding: 7px;
+  }
+
+  .hamburger-menu,
+  .orbit-mark {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+  }
+
+  .orbit-logotype {
+    display: none;
+  }
+
+  .logo-container {
+    gap: 0;
+  }
+
+  .card-nav-content {
+    top: 58px;
+    padding: 8px;
+    gap: 8px;
+  }
+
+  .nav-card {
+    min-height: 96px;
+    padding: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hamburger-line,
+  .card-nav-cta-button,
+  .nav-card-link {
+    transition: none;
+  }
+}

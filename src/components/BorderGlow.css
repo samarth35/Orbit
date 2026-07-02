@@ -1,0 +1,104 @@
+.border-glow-card {
+  --edge-proximity: 0;
+  --cursor-angle: 45deg;
+  --edge-sensitivity: 30;
+  --color-sensitivity: calc(var(--edge-sensitivity) + 20);
+  --border-radius: 8px;
+  --glow-padding: 28px;
+  --cone-spread: 25;
+  position: relative;
+  border-radius: var(--border-radius);
+  isolation: isolate;
+  transform: translate3d(0, 0, 0.01px);
+  display: grid;
+  border: 1px solid rgb(255 255 255 / 15%);
+  background: var(--card-bg, var(--panel));
+  overflow: visible;
+}
+
+.border-glow-card.static-glow {
+  --edge-proximity: 72;
+  --cursor-angle: 126deg;
+}
+
+.border-glow-card::before,
+.border-glow-card::after,
+.border-glow-card > .edge-light {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  transition: opacity 0.25s ease-out;
+  z-index: -1;
+}
+
+.border-glow-card:not(:hover):not(.sweep-active):not(.static-glow)::before,
+.border-glow-card:not(:hover):not(.sweep-active):not(.static-glow)::after,
+.border-glow-card:not(:hover):not(.sweep-active):not(.static-glow) > .edge-light {
+  opacity: 0;
+  transition: opacity 0.75s ease-in-out;
+}
+
+.border-glow-card::before {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(var(--card-bg, var(--panel)) 0 100%) padding-box,
+    conic-gradient(
+      from var(--cursor-angle) at center,
+      transparent 0deg,
+      rgba(139, 92, 246, 0.05) 16deg,
+      rgba(196, 181, 253, 0.78) 26deg,
+      rgba(247, 244, 251, 0.74) 32deg,
+      rgba(139, 92, 246, 0.18) 43deg,
+      transparent 64deg,
+      transparent 360deg
+    ) border-box;
+  opacity: calc((var(--edge-proximity) - var(--edge-sensitivity)) / (100 - var(--edge-sensitivity)));
+  mask-image: conic-gradient(
+    from var(--cursor-angle) at center,
+    black 0deg,
+    black 72deg,
+    transparent 104deg,
+    transparent 256deg,
+    black 288deg,
+    black 360deg
+  );
+}
+
+.border-glow-card::after {
+  background:
+    radial-gradient(circle at 50% 50%, rgba(139, 92, 246, 0.13), transparent 58%),
+    conic-gradient(from var(--cursor-angle), rgba(196, 181, 253, 0.18), transparent 18%, transparent 82%, rgba(139, 92, 246, 0.14));
+  opacity: calc(var(--fill-opacity, 0.28) * (var(--edge-proximity) - var(--edge-sensitivity)) / (100 - var(--edge-sensitivity)));
+  mix-blend-mode: screen;
+}
+
+.border-glow-card > .edge-light {
+  inset: calc(var(--glow-padding) * -1);
+  pointer-events: none;
+  z-index: 1;
+  mask-image: conic-gradient(from var(--cursor-angle) at center, black 0deg, black 38deg, transparent 72deg, transparent 288deg, black 322deg, black 360deg);
+  opacity: calc((var(--edge-proximity) - var(--edge-sensitivity)) / (100 - var(--edge-sensitivity)));
+  mix-blend-mode: screen;
+}
+
+.border-glow-card > .edge-light::before {
+  content: "";
+  position: absolute;
+  inset: var(--glow-padding);
+  border-radius: inherit;
+  box-shadow:
+    inset 0 0 0 1px var(--glow-color),
+    inset 0 0 8px 0 var(--glow-color-40),
+    inset 0 0 26px 2px var(--glow-color-20),
+    0 0 8px 0 var(--glow-color-40),
+    0 0 30px 2px var(--glow-color-20);
+}
+
+.border-glow-inner {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: visible;
+  z-index: 1;
+}
