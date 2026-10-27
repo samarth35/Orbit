@@ -1,6 +1,6 @@
 import { normalizeState } from '../shared/orbitState.mjs';
 
-const API_ROOT = import.meta.env.DEV ? (import.meta.env.VITE_API_ROOT ?? 'http://127.0.0.1:4174') : '';
+const API_ROOT = import.meta.env.VITE_API_ROOT ?? '';
 const CSRF_COOKIE = 'orbit_csrf';
 
 export function getStoredUserId() {
@@ -19,7 +19,18 @@ function readCookie(name) {
     ?.slice(name.length + 1) ?? '';
 }
 
-async function request(path, options = {}) {
+let mutationQueue = Promise.resolve();
+
+function request(path, options = {}) {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(options.method ?? 'GET').toUpperCase())) {
+    const result = mutationQueue.then(() => performRequest(path, options));
+    mutationQueue = result.catch(() => undefined);
+    return result;
+  }
+  return performRequest(path, options);
+}
+
+async function performRequest(path, options = {}) {
   const method = String(options.method ?? 'GET').toUpperCase();
   const csrf = readCookie(CSRF_COOKIE);
   const headers = {
@@ -27,23 +38,31 @@ async function request(path, options = {}) {
     ...(csrf && !['GET', 'HEAD', 'OPTIONS'].includes(method) ? { 'X-Orbit-CSRF': decodeURIComponent(csrf) } : {}),
     ...options.headers
   };
-  const response = await fetch(`${API_ROOT}${path}`, {
-    credentials: 'include',
-    headers,
-    ...options
-  });
+  let response;
+  try {
+    response = await fetch(`${API_ROOT}${path}`, {
+      credentials: 'include',
+      ...options,
+      headers,
+      signal: options.signal ?? AbortSignal.timeout(30000)
+    });
+  } catch (error) {
+    window.dispatchEvent(new CustomEvent('orbit:request-error', { detail: { status: 0, message: 'Orbit could not reach the server. Your latest changes may not have saved. Please try again.' } }));
+    throw error;
+  }
 
   if (!response.ok) {
     const body = await response.text().catch(() => response.statusText);
     let message = body || `Request failed with ${response.status}`;
     try {
       const parsed = JSON.parse(body);
-      message = parsed.detail || message;
+      message = Array.isArray(parsed.detail) ? parsed.detail.map(item => item.msg).join('. ') : (parsed.detail || message);
     } catch {
       // Keep response text as-is.
     }
     const error = new Error(message);
     error.status = response.status;
+    if (!(response.status === 401 && path === '/api/users/me')) window.dispatchEvent(new CustomEvent('orbit:request-error', { detail: { status: response.status, message } }));
     throw error;
   }
 
@@ -100,10 +119,10 @@ export async function getOrbitState() {
   return normalizeState(payload.state ?? payload);
 }
 
-export async function createTask(title) {
+export async function createTask(title, task) {
   const payload = await request('/api/tasks', {
     method: 'POST',
-    body: JSON.stringify({ title })
+    body: JSON.stringify({ title, ...(task ? { task } : {}) })
   });
   return normalizeState(payload.state);
 }
@@ -131,10 +150,11 @@ export async function createNote(note) {
   return normalizeState(payload.state);
 }
 
-export async function patchNote(noteId, updates) {
+export async function patchNote(noteId, updates, keepalive = false) {
   const payload = await request(`/api/notes/${encodeURIComponent(noteId)}`, {
     method: 'PATCH',
-    body: JSON.stringify(updates)
+    body: JSON.stringify(updates),
+    keepalive
   });
   return normalizeState(payload.state);
 }

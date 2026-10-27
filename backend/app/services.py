@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, time
 from typing import Any
 
 from fastapi import HTTPException
@@ -208,6 +208,7 @@ class OrbitService:
         event = normalize_event({"id": self.store.new_id("evt"), **model_to_dict(payload)})
         if not event:
             raise HTTPException(status_code=400, detail="Event title and date are required")
+        validate_event(event)
 
         def update(state: OrbitState) -> OrbitState:
             state.events = sorted([*state.events, event], key=lambda item: (item.date, item.start))
@@ -229,6 +230,7 @@ class OrbitService:
                     continue
                 patched = normalize_event({**model_to_dict(event), **updates, "id": event.id})
                 if patched:
+                    validate_event(patched)
                     next_events.append(patched)
                     changed = True
             if not changed:
@@ -250,6 +252,8 @@ class OrbitService:
 
     def patch_focus(self, payload: FocusPatch, user_id: str | None = None) -> OrbitState:
         updates = patch_payload(payload)
+        if updates.get("running") is False:
+            return self.store.pause_focus(user_id, updates)
 
         def update(state: OrbitState) -> OrbitState:
             state.focus = normalize_focus({**model_to_dict(state.focus), **updates})
@@ -258,7 +262,7 @@ class OrbitService:
         return self.store.update(update, user_id)
 
     def reset_focus(self, user_id: str | None = None) -> OrbitState:
-        return self.patch_focus(FocusPatch(running=False, secondsLeft=25 * 60), user_id)
+        return self.store.reset_focus(user_id)
 
     def patch_preferences(self, payload: PreferencesPatch, user_id: str | None = None) -> OrbitState:
         updates = patch_payload(payload)
@@ -329,8 +333,8 @@ class OrbitService:
     def auth_status(self, user_id: str) -> dict[str, Any]:
         return self.store.auth_status(user_id)
 
-    def begin_google_oauth(self, redirect_to: str = "/") -> dict[str, Any]:
-        return self.store.begin_google_oauth(redirect_to)
+    def begin_google_oauth(self, redirect_to: str = "/", guest_user_id: str = "") -> dict[str, Any]:
+        return self.store.begin_google_oauth(redirect_to, guest_user_id)
 
     def complete_google_oauth(self, state: str, code: str, user_agent: str = "", ip_address: str = "") -> dict[str, Any]:
         return self.store.complete_google_oauth(state, code, user_agent, ip_address)
@@ -509,6 +513,17 @@ def patch_payload(model: Any) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump(exclude_unset=True)
     return model.dict(exclude_unset=True)
+
+
+def validate_event(event) -> None:
+    try:
+        date.fromisoformat(event.date)
+        start = time.fromisoformat(event.start)
+        end = time.fromisoformat(event.end)
+        if end <= start:
+            raise ValueError("end before start")
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail="Choose a valid date and an end time after the start time.") from error
 
 
 def unique_id(prefix: str, existing: list[str]) -> str:

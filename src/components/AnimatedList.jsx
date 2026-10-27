@@ -66,11 +66,11 @@ export default function AnimatedList({
       const typing = active?.tagName === 'INPUT' || active?.tagName === 'TEXTAREA';
       if (typing || !listRef.current?.matches(':hover, :focus-within')) return;
 
-      if (event.key === 'ArrowDown' || (event.key === 'Tab' && !event.shiftKey)) {
+      if (event.key === 'ArrowDown') {
         event.preventDefault();
         setKeyboardNav(true);
         setSelectedIndex(previous => Math.min(previous + 1, items.length - 1));
-      } else if (event.key === 'ArrowUp' || (event.key === 'Tab' && event.shiftKey)) {
+      } else if (event.key === 'ArrowUp') {
         event.preventDefault();
         setKeyboardNav(true);
         setSelectedIndex(previous => Math.max(previous - 1, 0));

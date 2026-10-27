@@ -21,6 +21,7 @@ export default function ShapeGrid({
   useEffect(() => {
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
+    if (!ctx) return undefined;
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const isHex = shape === 'hexagon';
     const isTri = shape === 'triangle';

@@ -193,7 +193,8 @@ export function normalizeFocus(focus) {
     completed: Number.isFinite(completed) ? Math.max(Math.round(completed), 0) : DEFAULT_FOCUS.completed,
     alarmEnabled: source.alarmEnabled !== false,
     alarmName: String(source.alarmName ?? DEFAULT_FOCUS.alarmName).trim() || DEFAULT_FOCUS.alarmName,
-    activeSessionId: String(source.activeSessionId ?? '').trim()
+    activeSessionId: String(source.activeSessionId ?? '').trim(),
+    deadlineAt: Number(source.deadlineAt) || 0
   };
 }
 

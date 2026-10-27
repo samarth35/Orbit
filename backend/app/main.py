@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import cookie_secure, database_url, load_dotenv, oauth_env, public_base_url
+from .config import cookie_secure, database_url, load_dotenv, oauth_env, public_base_url, validate_deployment
 from .models import (
     AuthHandleCreate,
     EventCreate,
@@ -42,6 +42,7 @@ DIST_ROOT = PROJECT_ROOT / "dist"
 DATA_PATH = PROJECT_ROOT / "data" / "orbit.sqlite3"
 
 load_dotenv()
+validate_deployment()
 store = PostgresStateStore(database_url()) if database_url() else SqliteStateStore(DATA_PATH)
 service = OrbitService(store)
 
@@ -69,8 +70,9 @@ if (DIST_ROOT / "assets").exists():
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    state = service.state()
-    return {"ok": True, "tasks": len(state.tasks), "notes": len(state.notes)}
+    with store._connect() as connection:
+        connection.execute("SELECT 1").fetchone()
+    return {"ok": True, "database": "postgres" if database_url() else "sqlite"}
 
 
 def request_ip(request: Request) -> str:
@@ -142,10 +144,7 @@ def current_user(request: Request, response: Response) -> dict[str, Any]:
 
 @app.post("/api/auth/handle")
 def auth_handle(payload: AuthHandleCreate, request: Request, response: Response) -> dict[str, Any]:
-    user = service.auth_handle(payload)
-    session_payload = service.create_session(user["id"], request.headers.get("user-agent", ""), request_ip(request))
-    set_session_cookies(response, session_payload)
-    return {"user": user, "state": service.state(user["id"]), "scores": service.score_summary(user["id"]), "groups": service.groups(user["id"]), "auth": service.auth_status(user["id"]), "session": session_payload["session"]}
+    raise HTTPException(status_code=410, detail="Use Google sign-in or a guest session to create an account.")
 
 
 @app.post("/api/auth/guest")
@@ -164,25 +163,40 @@ def auth_logout(request: Request, response: Response, user: dict[str, Any] = Dep
 
 
 @app.get("/api/auth/google/status")
-def google_status(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
-    return service.auth_status(user["id"])["providers"]["google"]
+def google_status() -> dict[str, Any]:
+    config = oauth_env("google")
+    return {"configured": bool(config["client_id"] and config["client_secret"])}
 
 
 @app.get("/api/auth/google/start")
-def google_start(redirect: str = Query(default="/")):
-    payload = service.begin_google_oauth(redirect)
+def google_start(request: Request, redirect: str = Query(default="/")):
+    context = service.session_user(request.cookies.get(SESSION_COOKIE, ""))
+    guest_id = context["user"]["id"] if context and context["user"].get("isGuest") else ""
+    payload = service.begin_google_oauth(redirect, guest_id)
     if not payload.get("configured"):
-        return payload
-    return RedirectResponse(payload["url"])
+        return RedirectResponse("/?auth_error=unavailable", status_code=303)
+    response = RedirectResponse(payload["url"])
+    response.set_cookie("orbit_oauth_state", payload["state"], max_age=600, httponly=True, secure=cookie_secure(), samesite="lax", path="/api/auth/google")
+    return response
 
 
 @app.get("/api/auth/google/callback")
-def google_callback(request: Request, state: str = Query(default=""), code: str = Query(default="")):
-    if not state or not code:
-        raise HTTPException(status_code=400, detail="Missing OAuth callback parameters")
-    payload = service.complete_google_oauth(state, code, request.headers.get("user-agent", ""), request_ip(request))
-    redirect = RedirectResponse(payload.get("redirectTo") or "/")
-    set_session_cookies(redirect, payload["session"])
+def google_callback(request: Request, state: str = Query(default=""), code: str = Query(default=""), error: str = Query(default="")):
+    bound_state = request.cookies.get("orbit_oauth_state", "")
+    if not state or not bound_state or not hmac.compare_digest(state, bound_state):
+        redirect = RedirectResponse("/?auth_error=expired", status_code=303)
+    elif error:
+        redirect = RedirectResponse("/?auth_error=cancelled", status_code=303)
+    elif not code:
+        redirect = RedirectResponse("/?auth_error=failed", status_code=303)
+    else:
+        try:
+            payload = service.complete_google_oauth(state, code, request.headers.get("user-agent", ""), request_ip(request))
+            redirect = RedirectResponse(payload.get("redirectTo") or "/", status_code=303)
+            set_session_cookies(redirect, payload["session"])
+        except (HTTPException, OSError, ValueError):
+            redirect = RedirectResponse("/?auth_error=failed", status_code=303)
+    redirect.delete_cookie("orbit_oauth_state", path="/api/auth/google")
     return redirect
 
 
@@ -422,6 +436,8 @@ def score_summary(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any
 
 @app.get("/{full_path:path}")
 def serve_app(full_path: str):
+    if full_path == "api" or full_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="API route not found")
     requested = (DIST_ROOT / full_path).resolve()
     if DIST_ROOT.exists() and requested.is_file() and DIST_ROOT in requested.parents:
         return FileResponse(requested)

@@ -111,10 +111,27 @@ class PostgresStateStore(SqliteStateStore):
         self._ensure_schema()
 
     def _connect(self) -> PgConnection:
-        return PgConnection(self._psycopg.connect(self.url))
+        return PgConnection(self._psycopg.connect(self.url, connect_timeout=10, prepare_threshold=None))
+
+    def update(self, updater, user_id=None):
+        # A process-local lock cannot protect state across Vercel instances.
+        with self._lock, self._connect() as connection:
+            user = self.ensure_user(user_id, connection)
+            self._lock_focus_user(connection, user["id"])
+            connection.execute("SELECT user_id FROM user_states WHERE user_id = ? FOR UPDATE", (user["id"],)).fetchone()
+            state = self._read_user_state(connection, user["id"])
+            clean_state = normalize_state(model_to_dict(updater(state)))
+            self._replace_user_state(connection, user["id"], clean_state)
+            self._sync_user_from_profile(connection, user["id"], clean_state)
+            return clean_state
+
+    def _lock_focus_user(self, connection, user_id: str) -> None:
+        # Allow foreign-key checks in activity logging while serializing state writers.
+        connection.execute("SELECT id FROM users WHERE id = ? FOR NO KEY UPDATE", (user_id,)).fetchone()
 
     def _ensure_schema(self) -> None:
         with self._connect() as connection:
+            connection.execute("SELECT pg_advisory_xact_lock(56721167)")
             statements = [
                 """
                 CREATE TABLE IF NOT EXISTS users (
@@ -245,15 +262,20 @@ class PostgresStateStore(SqliteStateStore):
             for statement in statements:
                 connection.execute(statement)
             connection.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_guest INTEGER NOT NULL DEFAULT 0")
+            connection.execute("ALTER TABLE oauth_states ADD COLUMN IF NOT EXISTS guest_user_id TEXT NOT NULL DEFAULT ''")
+            connection.execute("ALTER TABLE focus_sessions ADD COLUMN IF NOT EXISTS paused_at TEXT NOT NULL DEFAULT ''")
+            connection.execute("ALTER TABLE focus_sessions ADD COLUMN IF NOT EXISTS paused_seconds INTEGER NOT NULL DEFAULT 0")
             connection.execute(
                 """
                 UPDATE users
                 SET is_guest = 1
                 WHERE id <> ?
                   AND (LOWER(handle) LIKE 'guest-%' OR LOWER(display_name) = 'guest')
+                  AND NOT EXISTS (SELECT 1 FROM auth_accounts WHERE auth_accounts.user_id = users.id)
                 """,
                 (DEFAULT_USER_ID,),
             )
+            connection.execute("UPDATE users SET is_guest = 0 WHERE EXISTS (SELECT 1 FROM auth_accounts WHERE auth_accounts.user_id = users.id)")
             self._ensure_seed(connection)
 
     def _ensure_seed(self, connection) -> None:

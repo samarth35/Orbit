@@ -37,7 +37,11 @@ def oauth_env(provider: str) -> dict[str, str]:
 
 
 def public_base_url() -> str:
-    return os.getenv("ORBIT_PUBLIC_BASE_URL", "http://127.0.0.1:4174").rstrip("/")
+    explicit = os.getenv("ORBIT_PUBLIC_BASE_URL", "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    hostname = os.getenv("VERCEL_PROJECT_PRODUCTION_URL", "") if os.getenv("VERCEL_ENV") == "production" else os.getenv("VERCEL_URL", "")
+    return f"https://{hostname}" if hostname else "http://127.0.0.1:4174"
 
 
 def database_url() -> str:
@@ -46,6 +50,16 @@ def database_url() -> str:
 
 def session_secret() -> str:
     return os.getenv("ORBIT_SESSION_SECRET", "orbit-dev-session-secret-change-me")
+
+
+def validate_deployment() -> None:
+    if not os.getenv("VERCEL"):
+        return
+    if not database_url():
+        raise RuntimeError("Set DATABASE_URL to a hosted Postgres database. Vercel cannot persist SQLite data.")
+    secret = session_secret()
+    if len(secret) < 32 or secret.startswith(("orbit-dev-", "replace_with_")):
+        raise RuntimeError("Set ORBIT_SESSION_SECRET to a unique random value of at least 32 characters.")
 
 
 def cookie_secure() -> bool:

@@ -48,6 +48,7 @@ class FocusState(BaseModel):
     alarmEnabled: bool = True
     alarmName: str = "Soft chime"
     activeSessionId: str = ""
+    deadlineAt: int = 0
 
 
 class CalendarEvent(BaseModel):
@@ -535,13 +536,16 @@ def normalize_focus(value: dict[str, Any] | FocusState | None) -> FocusState:
     if isinstance(value, FocusState):
         value = model_to_dict(value)
     source = value if isinstance(value, dict) else {}
+    deadline = coerce_int(source.get("deadlineAt"), 0, 0, 10**15)
+    remaining = max(0, round((deadline - datetime.now().timestamp() * 1000) / 1000)) if source.get("running") and deadline else source.get("secondsLeft")
     return FocusState(
         running=bool(source.get("running")),
-        secondsLeft=coerce_int(source.get("secondsLeft"), 25 * 60, 0, 99 * 60),
+        secondsLeft=coerce_int(remaining, 25 * 60, 0, 99 * 60),
         completed=coerce_int(source.get("completed"), 2, 0, 100_000),
         alarmEnabled=bool(source.get("alarmEnabled", True)),
         alarmName=str(source.get("alarmName") or "Soft chime").strip() or "Soft chime",
         activeSessionId=str(source.get("activeSessionId") or "").strip(),
+        deadlineAt=deadline,
     )
 
 

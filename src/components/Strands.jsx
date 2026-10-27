@@ -209,7 +209,17 @@ export default function Strands({
     if (!ctn) return undefined;
 
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    const renderer = new Renderer({ alpha: true, premultipliedAlpha: true, antialias: true });
+    let renderer;
+    try {
+      renderer = new Renderer({ alpha: true, premultipliedAlpha: true, antialias: true });
+    } catch {
+      ctn.classList.add('strands-fallback');
+      return undefined;
+    }
+    if (!renderer.gl) {
+      ctn.classList.add('strands-fallback');
+      return undefined;
+    }
     const gl = renderer.gl;
     gl.clearColor(0, 0, 0, 0);
     gl.enable(gl.BLEND);

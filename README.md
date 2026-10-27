@@ -1,247 +1,75 @@
 # Orbit
 
-Orbit is a social lock-in productivity app: tasks, notes, calendar blocks, focus sessions, groups, and score-based leaderboards in one dark-first command center.
+Orbit brings tasks, notes, calendar blocks, focus sessions, and group leaderboards into one workspace. A persistent sidebar on desktop and labeled navigation on mobile keep each part of your day within reach.
 
-It runs as a React + Vite frontend served by a FastAPI backend. Local development falls back to SQLite; production can use Postgres through `DATABASE_URL`.
+**Live app:** https://orbit-alpha-lyart.vercel.app
 
 ## Features
 
-- Google OAuth session login with secure HttpOnly cookies and CSRF protection.
-- Guest session mode for quick access.
-- Groups with invite codes, member roles, owner controls, and leaderboards.
-- Backend-computed lock-in score across day, week, month, and year.
-- Anti-cheat scoring for completed work and valid focus sessions.
-- Tasks, notes, routines, calendar blocks, profile, and Pomodoro-style focus.
-- Dark/light UI with React Bits-inspired animated surfaces and glow components.
+- Google sign-in and guest sessions, with HttpOnly session cookies and CSRF protection.
+- Link a new Google identity to a guest workspace without losing its tasks, notes, or groups. Signing into an existing Google account opens that account's workspace.
+- Tasks with priority, due dates, and context, saved in one request.
+- Notes with debounced autosave, save feedback, and protection against delayed responses overwriting newer edits.
+- A calendar timeline with date selection, editable blocks, and time validation.
+- Focus sessions with pause/resume, reset, a timer that survives navigation and reload, and server-validated scoring that excludes paused time.
+- Groups, invite codes, member roles, and day/week/month/year leaderboards.
+- The original purple glass, animated grid, and focus visuals, with light mode, keyboard navigation, reduced-motion support, and a fallback for devices without WebGL.
 
-## Tech Stack
+## Stack
 
-- React 18 + Vite
-- FastAPI + Uvicorn
-- SQLite locally, Postgres in production
-- Motion, GSAP, OGL, Lucide icons
+React 18 and Vite, FastAPI, SQLite for local development, and Postgres for production. Public Sans and Cormorant Garamond are served locally; their licenses are in `public/fonts/`.
 
-## Local Setup
+## Run locally
 
-Install frontend dependencies:
+From PowerShell, with Node.js and Python 3.12 or later installed:
 
-```bash
-npm install
-```
-
-Create and install backend dependencies:
-
-```bash
+```powershell
+npm ci
 python -m venv .venv
-.\.venv\Scripts\pip install -r requirements.txt
-```
-
-Create `.env` from `.env.example` and fill in your values:
-
-```bash
-copy .env.example .env
-```
-
-Run the production-style local app:
-
-```bash
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+Copy-Item .env.example .env
 npm run build
 npm run serve
 ```
 
-Open:
+Open http://127.0.0.1:4174. An empty `DATABASE_URL` uses `data/orbit.sqlite3` locally.
 
-```text
-http://127.0.0.1:4174
+For frontend development, keep the backend running and run `npm run dev` in a second terminal. Vite proxies `/api` to the backend on port 4174.
+
+## Deploy on Vercel
+
+The repository includes a FastAPI entrypoint, Vite build configuration, and `vercel.json`. Select the **FastAPI** framework preset and deploy from the repository root. Vercel builds the frontend and serves static assets through its CDN.
+
+Set these server-side environment variables for Production:
+
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Hosted Postgres connection string; a pooled connection is suitable for serverless deployment. |
+| `ORBIT_SESSION_SECRET` | A unique random secret of at least 32 characters. Keep it stable across redeploys. |
+| `ORBIT_GOOGLE_CLIENT_ID` | Existing Google web application OAuth client ID. |
+| `ORBIT_GOOGLE_CLIENT_SECRET` | Secret for the same Google OAuth client. |
+| `ORBIT_PUBLIC_BASE_URL` | Optional explicit HTTPS origin. Otherwise Orbit uses Vercel's production domain. |
+| `ORBIT_GOOGLE_REDIRECT_URI` | Optional explicit callback. Defaults to the public origin plus `/api/auth/google/callback`. |
+
+In that Google OAuth client's Cloud Console settings, add the production HTTPS origin and the matching `/api/auth/google/callback` redirect URI. If Google marks the OAuth app as Testing, only its configured test users can sign in until its publishing settings are changed.
+
+Vercel deployments require Postgres and a valid session secret; Orbit refuses to start with temporary SQLite storage there. Use a separate database and corresponding credentials for preview environments. Changing a public origin requires updating the Google OAuth callback too.
+
+To deploy from a signed-in CLI:
+
+```powershell
+npx vercel link
+npx vercel --prod
 ```
 
-For frontend development, run the backend and Vite dev server in two terminals:
+`/api/health` checks database connectivity. Unknown `/api` paths return JSON errors, while app routes such as `/tasks` and `/notes` load the frontend directly.
 
-```bash
-npm run serve
-npm run dev
+## Tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest tests -q
+npm run build
 ```
 
-Then open:
-
-```text
-http://127.0.0.1:5173
-```
-
-## Environment Variables
-
-Required for deployment:
-
-```env
-ORBIT_PUBLIC_BASE_URL=https://your-domain.com
-ORBIT_SESSION_SECRET=use_a_long_random_secret
-DATABASE_URL=postgresql://user:password@host:5432/database
-ORBIT_GOOGLE_CLIENT_ID=your_google_client_id
-ORBIT_GOOGLE_CLIENT_SECRET=your_google_client_secret
-ORBIT_GOOGLE_REDIRECT_URI=https://your-domain.com/api/auth/google/callback
-```
-
-Optional:
-
-```env
-ORBIT_GOOGLE_AUTH_URL=
-ORBIT_GOOGLE_TOKEN_URL=
-```
-
-Leave the optional Google URLs blank unless you intentionally need custom OAuth endpoints.
-
-## Google OAuth Setup
-
-In Google Cloud Console:
-
-1. Create or choose a Google Cloud project.
-2. Configure the OAuth consent screen.
-3. Create an OAuth Client ID for a web application.
-4. Add authorized JavaScript origins:
-
-```text
-http://127.0.0.1:4174
-https://your-domain.com
-```
-
-5. Add authorized redirect URIs:
-
-```text
-http://127.0.0.1:4174/api/auth/google/callback
-https://your-domain.com/api/auth/google/callback
-```
-
-6. Put the client ID, client secret, public base URL, and redirect URI into your deployment environment variables.
-
-## Deploy For Users
-
-Orbit is easiest to deploy as one Docker web service plus a hosted Postgres database. The included `Dockerfile` builds the React app, installs FastAPI dependencies, and serves everything from one container.
-
-### Recommended Hosting Shape
-
-- One web service/container.
-- One hosted Postgres database, such as Neon, Supabase, Railway Postgres, or Render Postgres.
-- `DATABASE_URL` set on the web service.
-- HTTPS enabled by the platform.
-- One app instance is still recommended for V1 scoring/session simplicity.
-
-If `DATABASE_URL` is missing, Orbit uses local SQLite at `data/orbit.sqlite3`. That is good for local development but not reliable on free ephemeral hosts.
-
-### Free Render + Neon Postgres
-
-1. Create a free Neon Postgres project.
-2. Copy Neon connection string. Use the pooled connection string if Neon provides one.
-3. Push this repo to GitHub.
-4. Create a new Render Web Service from the GitHub repo.
-5. Choose Docker deployment.
-6. Add environment variables:
-
-```env
-DATABASE_URL=postgresql://user:password@host/database?sslmode=require
-ORBIT_SESSION_SECRET=use_a_long_random_secret
-ORBIT_PUBLIC_BASE_URL=https://your-render-url
-ORBIT_GOOGLE_REDIRECT_URI=https://your-render-url/api/auth/google/callback
-ORBIT_GOOGLE_CLIENT_ID=your_google_client_id
-ORBIT_GOOGLE_CLIENT_SECRET=your_google_client_secret
-```
-
-7. Deploy.
-8. Add the same Render callback URL in Google Cloud Console.
-
-### Render
-
-1. Push this repo to GitHub.
-2. Create a new Render Web Service from the GitHub repo.
-3. Choose Docker deployment.
-4. Add `DATABASE_URL` from your hosted Postgres provider.
-5. Add the other environment variables listed above.
-6. Deploy.
-7. Copy the public Render URL into your environment variables:
-
-```env
-ORBIT_PUBLIC_BASE_URL=https://your-render-url
-ORBIT_GOOGLE_REDIRECT_URI=https://your-render-url/api/auth/google/callback
-```
-
-8. Add the same redirect URI in Google Cloud Console.
-
-### Railway
-
-1. Create a Railway project from the GitHub repo.
-2. Let Railway build from the Dockerfile.
-3. Add a Railway Postgres database or an external Postgres `DATABASE_URL`.
-4. Add the environment variables listed above.
-5. Deploy and use the generated HTTPS domain.
-6. Add that domain and callback URL in Google Cloud Console.
-
-### Any Docker Host
-
-Build locally:
-
-```bash
-docker build -t orbit .
-```
-
-Run locally with SQLite fallback:
-
-```bash
-docker run --rm -p 8000:8000 --env-file .env orbit
-```
-
-Run locally with Postgres:
-
-```bash
-docker run --rm -p 8000:8000 --env-file .env orbit
-```
-
-Set `DATABASE_URL` in `.env` for Postgres mode.
-
-Open:
-
-```text
-http://127.0.0.1:8000
-```
-
-For production, set `ORBIT_PUBLIC_BASE_URL` and `ORBIT_GOOGLE_REDIRECT_URI` to the public HTTPS URL.
-
-## Health Check
-
-Use:
-
-```text
-/api/health
-```
-
-FastAPI docs are available at:
-
-```text
-/docs
-```
-
-## GitHub Push
-
-If this folder is not already a real Git repository:
-
-```bash
-git init
-git branch -M main
-git add .
-git commit -m "Build Orbit social lock-in app"
-git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
-git push -u origin main
-```
-
-If the remote already exists:
-
-```bash
-git add .
-git commit -m "Prepare Orbit for deployment"
-git push
-```
-
-## Notes
-
-- `.env`, SQLite files, `node_modules`, `dist`, `.venv`, and local Codex folders are ignored.
-- Keep `ORBIT_SESSION_SECRET` private and unique per deployment.
-- SQLite is local fallback only.
-- Use Postgres for public deployments so users, groups, tasks, sessions, and scores survive redeploys.
+Regression coverage includes session isolation, CSRF, Google callback binding and replay protection, verified email checks, persistent guest upgrades, focus pause/resume/reset, repeat completion requests, calendar validation, and group permissions.

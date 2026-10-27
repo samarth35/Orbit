@@ -72,7 +72,7 @@ def clean_handle(value: str) -> str:
 
 def clean_redirect(value: str) -> str:
     raw = str(value or "/").strip()
-    if not raw.startswith("/") or raw.startswith("//"):
+    if not raw.startswith("/") or raw.startswith("//") or "\\" in raw or any(ord(char) < 32 for char in raw):
         return "/"
     return raw[:160]
 
@@ -397,7 +397,7 @@ class SqliteStateStore:
             if own_connection:
                 connection.close()
 
-    def begin_google_oauth(self, redirect_to: str = "/") -> dict[str, Any]:
+    def begin_google_oauth(self, redirect_to: str = "/", guest_user_id: str = "") -> dict[str, Any]:
         config = oauth_env("google")
         redirect_uri = config["redirect_uri"] or f"{public_base_url()}/api/auth/google/callback"
         configured = bool(config["client_id"] and config["client_secret"])
@@ -410,10 +410,10 @@ class SqliteStateStore:
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO oauth_states(state, provider, code_verifier, nonce, redirect_to, created_at, expires_at, used_at)
-                VALUES(?, 'google', ?, ?, ?, ?, ?, '')
+                INSERT INTO oauth_states(state, provider, code_verifier, nonce, redirect_to, created_at, expires_at, used_at, guest_user_id)
+                VALUES(?, 'google', ?, ?, ?, ?, ?, '', ?)
                 """,
-                (state, verifier, nonce, clean_redirect(redirect_to), now_iso(), iso_after(minutes=OAUTH_STATE_MINUTES)),
+                (state, verifier, nonce, clean_redirect(redirect_to), now_iso(), iso_after(minutes=OAUTH_STATE_MINUTES), guest_user_id),
             )
             connection.commit()
         params = {
@@ -425,8 +425,7 @@ class SqliteStateStore:
             "nonce": nonce,
             "code_challenge": challenge,
             "code_challenge_method": "S256",
-            "access_type": "offline",
-            "prompt": "consent",
+            "prompt": "select_account",
         }
         return {"configured": True, "url": f"{config['auth_url'] or GOOGLE_AUTH_URL}?{urlencode(params)}", "state": state}
 
@@ -445,7 +444,9 @@ class SqliteStateStore:
             expires_at = parse_datetime(state_row["expires_at"])
             if expires_at and expires_at <= datetime.now(timezone.utc):
                 raise HTTPException(status_code=400, detail="OAuth state expired")
-            connection.execute("UPDATE oauth_states SET used_at = ? WHERE state = ?", (now_iso(), state))
+            claimed = connection.execute("UPDATE oauth_states SET used_at = ? WHERE state = ? AND used_at = '' RETURNING state", (now_iso(), state)).fetchone()
+            if not claimed:
+                raise HTTPException(status_code=400, detail="OAuth state is already used")
             connection.commit()
 
         token_payload = {
@@ -465,6 +466,8 @@ class SqliteStateStore:
         email = str(profile.get("email") or "").strip().lower()
         if not subject:
             raise HTTPException(status_code=400, detail="Google profile is missing a subject")
+        if not email or profile.get("email_verified") is not True:
+            raise HTTPException(status_code=400, detail="A verified Google email is required")
         display_name = str(profile.get("name") or email.split("@")[0] or "Orbit User").strip()
         avatar = str(profile.get("picture") or "").strip()
 
@@ -480,8 +483,16 @@ class SqliteStateStore:
                     "SELECT user_id FROM auth_accounts WHERE email = ? ORDER BY linked_at LIMIT 1",
                     (email,),
                 ).fetchone() if email else None
+                guest_row = connection.execute("SELECT * FROM users WHERE id = ? AND is_guest = 1", (state_row["guest_user_id"],)).fetchone() if state_row["guest_user_id"] else None
                 if account_by_email:
                     user = self.ensure_user(account_by_email["user_id"], connection)
+                elif guest_row:
+                    user = self.ensure_user(guest_row["id"], connection)
+                    connection.execute("UPDATE users SET is_guest = 0, display_name = ? WHERE id = ?", (display_name, user["id"]))
+                    guest_state = self._read_user_state(connection, user["id"])
+                    guest_state.profile.name = display_name
+                    guest_state.profile.role = "Orbit member"
+                    self._replace_user_state(connection, user["id"], guest_state)
                 else:
                     handle_seed = clean_handle(email.split("@")[0] if email else display_name)
                     handle = self._available_handle(connection, handle_seed)
@@ -905,11 +916,21 @@ class SqliteStateStore:
     def start_focus_session(self, user_id: str | None, planned_minutes: int = 25) -> dict[str, Any]:
         with self._lock, self._connect() as connection:
             user = self.ensure_user(user_id, connection)
+            self._lock_focus_user(connection, user["id"])
             active = connection.execute(
                 "SELECT * FROM focus_sessions WHERE user_id = ? AND status = 'active' ORDER BY started_at DESC LIMIT 1",
                 (user["id"],),
             ).fetchone()
             if active:
+                state = self._read_user_state(connection, user["id"])
+                if not state.focus.running:
+                    paused_at = parse_datetime(active["paused_at"])
+                    paused = max(int((datetime.now(timezone.utc) - paused_at).total_seconds()), 0) if paused_at else 0
+                    connection.execute("UPDATE focus_sessions SET paused_seconds = paused_seconds + ?, paused_at = '' WHERE id = ?", (paused, active["id"]))
+                    state.focus.running = True
+                    state.focus.deadlineAt = int(datetime.now(timezone.utc).timestamp() * 1000) + state.focus.secondsLeft * 1000
+                    self._replace_user_state(connection, user["id"], state)
+                    connection.commit()
                 return dict(active)
             session_id = secure_id("foc")
             connection.execute(
@@ -919,6 +940,9 @@ class SqliteStateStore:
             state = self._read_user_state(connection, user["id"])
             state.focus.running = True
             state.focus.activeSessionId = session_id
+            if state.focus.secondsLeft <= 0:
+                state.focus.secondsLeft = 25 * 60
+            state.focus.deadlineAt = int(datetime.now(timezone.utc).timestamp() * 1000) + state.focus.secondsLeft * 1000
             self._replace_user_state(connection, user["id"], state)
             connection.commit()
             return dict(connection.execute("SELECT * FROM focus_sessions WHERE id = ?", (session_id,)).fetchone())
@@ -926,6 +950,7 @@ class SqliteStateStore:
     def complete_focus_session(self, user_id: str | None, session_id: str | None = None) -> dict[str, Any]:
         with self._lock, self._connect() as connection:
             user = self.ensure_user(user_id, connection)
+            self._lock_focus_user(connection, user["id"])
             if session_id:
                 row = connection.execute(
                     "SELECT * FROM focus_sessions WHERE id = ? AND user_id = ?",
@@ -938,9 +963,13 @@ class SqliteStateStore:
                 ).fetchone()
             if not row:
                 return {"session": None, "state": model_to_dict(self._read_user_state(connection, user["id"]))}
+            if row["status"] != "active":
+                return {"session": dict(row), "state": model_to_dict(self._read_user_state(connection, user["id"]))}
             started = parse_datetime(row["started_at"]) or datetime.now(timezone.utc)
             ended = datetime.now(timezone.utc)
-            elapsed_minutes = max(round((ended - started).total_seconds() / 60), 0)
+            paused_at = parse_datetime(row["paused_at"])
+            paused = int(row["paused_seconds"]) + (max((ended - paused_at).total_seconds(), 0) if paused_at else 0)
+            elapsed_minutes = max(round(((ended - started).total_seconds() - paused) / 60), 0)
             suspicious = elapsed_minutes < 10
             valid_minutes = 0 if suspicious else min(elapsed_minutes, int(row["planned_minutes"] or 25), 120)
             status = "flagged" if suspicious else "completed"
@@ -952,12 +981,44 @@ class SqliteStateStore:
             state = self._read_user_state(connection, user["id"])
             state.focus.running = False
             state.focus.activeSessionId = ""
+            state.focus.deadlineAt = 0
+            state.focus.secondsLeft = 0
             if not suspicious:
                 state.focus.completed += 1
             self._replace_user_state(connection, user["id"], state)
             self.score_breakdown(user["id"], "day", connection)
             connection.commit()
             return {"session": dict(connection.execute("SELECT * FROM focus_sessions WHERE id = ?", (row["id"],)).fetchone()), "state": model_to_dict(state)}
+
+    def _lock_focus_user(self, connection, user_id: str) -> None:
+        # SQLite's process lock is held by the caller. Postgres overrides this.
+        pass
+
+    def pause_focus(self, user_id: str | None, updates: dict) -> OrbitState:
+        with self._lock, self._connect() as connection:
+            user = self.ensure_user(user_id, connection)
+            self._lock_focus_user(connection, user["id"])
+            state = self._read_user_state(connection, user["id"])
+            connection.execute("UPDATE focus_sessions SET paused_at = ? WHERE user_id = ? AND status = 'active' AND paused_at = ''", (now_iso(), user["id"]))
+            from .models import normalize_focus
+            state.focus = normalize_focus({**model_to_dict(state.focus), **updates, "running": False, "deadlineAt": 0})
+            self._replace_user_state(connection, user["id"], state)
+            connection.commit()
+            return state
+
+    def reset_focus(self, user_id: str | None) -> OrbitState:
+        with self._lock, self._connect() as connection:
+            user = self.ensure_user(user_id, connection)
+            self._lock_focus_user(connection, user["id"])
+            connection.execute("UPDATE focus_sessions SET status = 'cancelled', ended_at = ? WHERE user_id = ? AND status = 'active'", (now_iso(), user["id"]))
+            state = self._read_user_state(connection, user["id"])
+            state.focus.running = False
+            state.focus.secondsLeft = 25 * 60
+            state.focus.activeSessionId = ""
+            state.focus.deadlineAt = 0
+            self._replace_user_state(connection, user["id"], state)
+            connection.commit()
+            return state
 
     def log_activity(self, user_id: str, event_type: str, target_id: str, data: dict[str, Any] | None = None, suspicious: bool = False, connection: sqlite3.Connection | None = None) -> None:
         own_connection = connection is None
@@ -1129,6 +1190,14 @@ class SqliteStateStore:
                 """
             )
             self._ensure_user_guest_column(connection)
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(oauth_states)")}
+            if "guest_user_id" not in columns:
+                connection.execute("ALTER TABLE oauth_states ADD COLUMN guest_user_id TEXT NOT NULL DEFAULT ''")
+            focus_columns = {row["name"] for row in connection.execute("PRAGMA table_info(focus_sessions)")}
+            if "paused_at" not in focus_columns:
+                connection.execute("ALTER TABLE focus_sessions ADD COLUMN paused_at TEXT NOT NULL DEFAULT ''")
+            if "paused_seconds" not in focus_columns:
+                connection.execute("ALTER TABLE focus_sessions ADD COLUMN paused_seconds INTEGER NOT NULL DEFAULT 0")
             self._ensure_seed(connection)
 
     def _ensure_user_guest_column(self, connection: sqlite3.Connection) -> None:
@@ -1141,9 +1210,11 @@ class SqliteStateStore:
             SET is_guest = 1
             WHERE id <> ?
               AND (LOWER(handle) LIKE 'guest-%' OR LOWER(display_name) = 'guest')
+              AND NOT EXISTS (SELECT 1 FROM auth_accounts WHERE auth_accounts.user_id = users.id)
             """,
             (DEFAULT_USER_ID,),
         )
+        connection.execute("UPDATE users SET is_guest = 0 WHERE EXISTS (SELECT 1 FROM auth_accounts WHERE auth_accounts.user_id = users.id)")
 
     def _ensure_seed(self, connection: sqlite3.Connection) -> None:
         user_count = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]

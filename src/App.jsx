@@ -43,8 +43,9 @@ import {
 } from 'lucide-react';
 import AnimatedList from './components/AnimatedList.jsx';
 import BorderGlow from './components/BorderGlow.jsx';
-import CardNav from './components/CardNav.jsx';
-import Dock from './components/Dock.jsx';
+import WorkspaceNav from './components/WorkspaceNav.jsx';
+import TodayDashboard from './components/TodayDashboard.jsx';
+import InlineInput from './components/InlineInput.jsx';
 import ShapeGrid from './components/ShapeGrid.jsx';
 import Strands from './components/Strands.jsx';
 import {
@@ -64,6 +65,7 @@ import {
   getGroupMembers,
   getGroupLeaderboard,
   getGroups,
+  getGoogleAuthStatus,
   getScoreSummary,
   getSuggestions,
   joinGroup,
@@ -85,38 +87,7 @@ import {
   updateGroupMember
 } from './api.js';
 import { createCapturedTask, createDefaultState, normalizeState, VIEW_LABELS } from '../shared/orbitState.mjs';
-import { useMediaQuery, usePrefersReducedMotion } from './hooks.js';
-
-const NAV_ITEMS = [
-  {
-    label: 'Plan',
-    bgColor: 'linear-gradient(135deg, #141019, #262032)',
-    textColor: '#f8f6ff',
-    links: [
-      { label: 'Today', view: 'Today', ariaLabel: 'Open Today' },
-      { label: 'Calendar', view: 'Calendar', ariaLabel: 'Open Calendar' }
-    ]
-  },
-  {
-    label: 'Create',
-    bgColor: 'linear-gradient(135deg, #11131b, #20202b)',
-    textColor: '#f8f6ff',
-    links: [
-      { label: 'Tasks', view: 'Tasks', ariaLabel: 'Open Tasks' },
-      { label: 'Notes', view: 'Notes', ariaLabel: 'Open Notes' }
-    ]
-  },
-  {
-    label: 'Balance',
-    bgColor: 'linear-gradient(135deg, #101018, #211b2b)',
-    textColor: '#f8f6ff',
-    links: [
-      { label: 'Focus', view: 'Focus', ariaLabel: 'Open Focus' },
-      { label: 'Groups', view: 'Groups', ariaLabel: 'Open Groups' },
-      { label: 'Score', view: 'Score', ariaLabel: 'Open Score' }
-    ]
-  }
-];
+import { usePrefersReducedMotion } from './hooks.js';
 
 const STRAND_COLORS = {
   dark: ['#f8f6ff', '#8b5cf6', '#c4b5fd', '#9ca3af'],
@@ -130,7 +101,6 @@ function localDateString(date = new Date()) {
 }
 
 const TODAY = localDateString();
-const TIME_SLOTS = ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00'];
 const CALENDAR_START_HOUR = 0;
 const CALENDAR_END_HOUR = 24;
 const CALENDAR_START_MINUTES = CALENDAR_START_HOUR * 60;
@@ -188,14 +158,6 @@ function formatTime(totalSeconds) {
   return `${minutes}:${seconds}`;
 }
 
-function todayLabel() {
-  return new Intl.DateTimeFormat('en', {
-    weekday: 'long',
-    month: 'short',
-    day: 'numeric'
-  }).format(new Date());
-}
-
 function dateLabel(dateString) {
   return new Intl.DateTimeFormat('en', {
     weekday: 'short',
@@ -224,12 +186,7 @@ function durationLabel(totalMinutes) {
 }
 
 function readCachedState() {
-  try {
-    const stored = window.localStorage.getItem(FALLBACK_CACHE_KEY);
-    return stored ? normalizeState(JSON.parse(stored)) : createDefaultState();
-  } catch {
-    return createDefaultState();
-  }
+  return createDefaultState();
 }
 
 function resolveUpdater(updater, current) {
@@ -326,24 +283,81 @@ export default function App() {
   const [groupNameDraft, setGroupNameDraft] = useState('');
   const [joinCodeDraft, setJoinCodeDraft] = useState('');
   const [booting, setBooting] = useState(true);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [googleReady, setGoogleReady] = useState(null);
+  const [notice, setNotice] = useState('');
+  const [noteSaveStatus, setNoteSaveStatus] = useState('saved');
+  const noteEdits = useRef(new Map());
+  const focusDeadline = useRef(null);
   const inputRef = useRef(null);
   const lastCompletedRef = useRef(orbitState.focus.completed);
   const reducedMotion = usePrefersReducedMotion();
-  const compactDock = useMediaQuery('(max-width: 760px)');
-  const tinyDock = useMediaQuery('(max-width: 430px)');
   const { theme, tasks, notes, routines, events, activeView, focus, profile } = orbitState;
 
   const updateOrbitState = useCallback(updater => {
     setOrbitState(current => normalizeState(resolveUpdater(updater, current)));
   }, []);
 
+  const applyRemoteState = useCallback(state => {
+    setOrbitState(current => normalizeState({
+      ...state,
+      activeView: viewFromPath(),
+      notes: state.notes.map(note => ({ ...note, ...(noteEdits.current.get(note.id)?.updates ?? {}) })),
+      focus: current.focus.running && current.focus.activeSessionId === state.focus.activeSessionId
+        ? { ...state.focus, secondsLeft: current.focus.secondsLeft, running: true } : state.focus
+    }));
+  }, []);
+
+  useEffect(() => {
+    getGoogleAuthStatus().then(status => setGoogleReady(status.configured)).catch(() => setGoogleReady(false));
+    const messages = {
+      unavailable: 'Google sign-in is temporarily unavailable. You can continue as a guest.',
+      cancelled: 'Google sign-in was cancelled. You can try again.',
+      expired: 'Your sign-in link expired. Please try again.',
+      failed: 'Google sign-in could not finish. Please try again.'
+    };
+    const authError = new URLSearchParams(window.location.search).get('auth_error');
+    if (authError) setNotice(messages[authError] ?? messages.failed);
+    const onError = event => {
+      setNotice(event.detail.message);
+      if (event.detail.status === 401) {
+        setCurrentUser(null);
+        setOrbitState(createDefaultState());
+        window.localStorage.removeItem(FALLBACK_CACHE_KEY);
+      }
+    };
+    window.addEventListener('orbit:request-error', onError);
+    const flushNotes = () => {
+      noteEdits.current.forEach((edit, id) => {
+        if (edit.timer) {
+          clearTimeout(edit.timer);
+          edit.timer = null;
+          patchNote(id, edit.updates, true).catch(() => undefined);
+        }
+      });
+    };
+    window.addEventListener('pagehide', flushNotes);
+    const warnUnsavedNotes = event => {
+      if (!noteEdits.current.size) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnUnsavedNotes);
+    return () => {
+      window.removeEventListener('orbit:request-error', onError);
+      window.removeEventListener('pagehide', flushNotes);
+      window.removeEventListener('beforeunload', warnUnsavedNotes);
+      flushNotes();
+    };
+  }, []);
+
   const setFocus = useCallback(updater => {
-    updateOrbitState(current => ({ ...current, focus: resolveUpdater(updater, current.focus) }));
-  }, [updateOrbitState]);
+    setOrbitState(current => ({ ...current, focus: resolveUpdater(updater, current.focus) }));
+  }, []);
 
   useEffect(() => {
     setProfileDraft(profile);
-  }, [profile]);
+  }, [currentUser?.id, profile.name, profile.handle, profile.role, profile.email, profile.timezone, profile.avatar, profile.dailyFocusGoal]);
 
   useEffect(() => {
     const stillExists = notes.some(note => note.id === selectedNoteId);
@@ -359,7 +373,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     setBackendStatus('loading');
-    Promise.all([getCurrentUser(), getSuggestions().catch(() => [])])
+    getCurrentUser().then(payload => Promise.all([Promise.resolve(payload), getSuggestions().catch(() => [])]))
       .then(([payload, nextSuggestions]) => {
         if (cancelled) return;
         setCurrentUser(payload.user);
@@ -374,6 +388,7 @@ export default function App() {
       .catch(error => {
         if (cancelled) return;
         if (error?.status === 401) {
+          setNotice(current => current === 'Sign in to continue' ? '' : current);
           setCurrentUser(null);
           setAuthInfo(null);
           setSessionInfo(null);
@@ -422,7 +437,7 @@ export default function App() {
       updateOrbitState(current => ({ ...current, activeView: nextView }));
       if (!currentUser) return;
       patchPreferences({ activeView: nextView })
-        .then(state => setOrbitState(normalizeState({ ...state, activeView: nextView })))
+        .then(() => setBackendStatus('online'))
         .catch(() => setBackendStatus('offline'));
     };
 
@@ -448,12 +463,9 @@ export default function App() {
   }, [currentUser, updateOrbitState]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(FALLBACK_CACHE_KEY, JSON.stringify(orbitState));
-    } catch {
-      // Local API owns persistence; browser cache is only the offline cushion.
-    }
-  }, [orbitState]);
+    // Account data belongs to the authenticated server session, not a shared browser cache.
+    window.localStorage.removeItem(FALLBACK_CACHE_KEY);
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setBooting(false), reducedMotion ? 280 : 1200);
@@ -461,11 +473,15 @@ export default function App() {
   }, [reducedMotion]);
 
   useEffect(() => {
-    if (!focus.running || focus.secondsLeft <= 0) return undefined;
+    if (!focus.running) {
+      focusDeadline.current = null;
+      return undefined;
+    }
+    if (!focusDeadline.current) focusDeadline.current = focus.deadlineAt || Date.now() + focus.secondsLeft * 1000;
     const interval = window.setInterval(() => {
       setFocus(current => {
         if (!current.running) return current;
-        const nextSeconds = Math.max(current.secondsLeft - 1, 0);
+        const nextSeconds = Math.max(Math.ceil((focusDeadline.current - Date.now()) / 1000), 0);
         return {
           ...current,
           running: nextSeconds > 0,
@@ -475,7 +491,7 @@ export default function App() {
       });
     }, 1000);
     return () => window.clearInterval(interval);
-  }, [focus.running, focus.secondsLeft, setFocus]);
+  }, [focus.running, setFocus]);
 
   useEffect(() => {
     if (focus.completed <= lastCompletedRef.current) {
@@ -488,7 +504,7 @@ export default function App() {
     const completionCall = focus.activeSessionId ? completeFocusSession(focus.activeSessionId) : patchFocusRemote(focus).then(state => ({ state }));
     completionCall
       .then(payload => {
-        setOrbitState(payload.state ?? payload);
+        applyRemoteState(payload.state ?? payload);
         setBackendStatus('online');
         refreshScores();
         refreshLeaderboard();
@@ -560,29 +576,6 @@ export default function App() {
     return tasks.filter(task => `${task.title} ${task.meta} ${task.priority}`.toLowerCase().includes(needle));
   }, [query, tasks]);
 
-  const dockIconMap = {
-    Today: <Home size={21} />,
-    Tasks: <ListTodo size={21} />,
-    Notes: <NotebookPen size={21} />,
-    Focus: <Timer size={21} />,
-    Calendar: <CalendarDays size={21} />,
-    Groups: <UsersRound size={21} />,
-    Score: <BarChart3 size={21} />,
-    Profile: <UserRound size={21} />
-  };
-
-  const dockItems = VIEW_LABELS.map(label => ({
-    label,
-    icon: dockIconMap[label],
-    onClick: () => handleNavigate(label),
-    className: activeView === label ? 'active' : ''
-  }));
-  const dockSizing = tinyDock
-    ? { panelHeight: 54, baseItemSize: 34, magnification: 38, dockHeight: 86, distance: 110 }
-    : compactDock
-      ? { panelHeight: 62, baseItemSize: 40, magnification: 46, dockHeight: 98, distance: 130 }
-      : { panelHeight: 82, baseItemSize: 58, magnification: 74, dockHeight: 150, distance: 180 };
-
   const handleNavigate = view => {
     const nextPath = pathForView(view);
     if (window.location.pathname !== nextPath) {
@@ -592,8 +585,7 @@ export default function App() {
     updateOrbitState(current => ({ ...current, activeView: view }));
     if (!currentUser) return;
     patchPreferences({ activeView: view })
-      .then(state => {
-        setOrbitState(normalizeState({ ...state, activeView: view }));
+      .then(() => {
         setBackendStatus('online');
       })
       .catch(() => setBackendStatus('offline'));
@@ -630,6 +622,9 @@ export default function App() {
   }, [activeView, currentUser, refreshLeaderboard, refreshScores]);
 
   const handleGuestLogin = () => {
+    if (authBusy) return;
+    setAuthBusy(true);
+    setNotice('');
     startGuestSession()
       .then(payload => {
         setCurrentUser(payload.user);
@@ -641,17 +636,26 @@ export default function App() {
         setBackendStatus('online');
         refreshSuggestions();
       })
-      .catch(() => setBackendStatus('offline'));
+      .catch(() => {
+        setBackendStatus('offline');
+        setNotice('We could not open your workspace. Check your connection and try again.');
+      })
+      .finally(() => setAuthBusy(false));
   };
 
   const handleGoogleLogin = () => {
+    if (authBusy) return;
+    setAuthBusy(true);
     startGoogleLogin(window.location.pathname || '/');
   };
 
   const handleLogout = () => {
+    if (noteEdits.current.size) {
+      setNotice('Please wait for your notes to finish saving before signing out.');
+      return;
+    }
     logoutSession()
-      .catch(() => undefined)
-      .finally(() => {
+      .then(() => {
         setCurrentUser(null);
         setAuthInfo(null);
         setSessionInfo(null);
@@ -661,7 +665,12 @@ export default function App() {
         setActiveGroupId('');
         setCopiedGroupCode('');
         setBackendStatus('online');
-      });
+        setOrbitState(createDefaultState());
+        setScores(EMPTY_SCORE_SUMMARY);
+        setNotice('');
+        window.localStorage.removeItem(FALLBACK_CACHE_KEY);
+      })
+      .catch(() => setNotice('Sign out could not finish. Please try again.'));
   };
 
   const handleCreateGroup = event => {
@@ -813,7 +822,7 @@ export default function App() {
     setQuery('');
     createTaskRemote(title)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
         refreshSuggestions();
         refreshScores();
@@ -834,10 +843,9 @@ export default function App() {
       updateOrbitState(current => ({ ...current, tasks: [optimistic, ...current.tasks] }));
     }
     setTaskDraft(current => ({ ...current, title: '' }));
-    createTaskRemote(`${title}${taskDraft.priority === 'High' ? ' !' : ''}`)
-      .then(state => patchTask(state.tasks[0].id, { date: taskDraft.date, priority: taskDraft.priority, meta: taskDraft.meta }))
+    createTaskRemote(title, optimistic)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
         refreshSuggestions();
         refreshScores();
@@ -853,7 +861,7 @@ export default function App() {
     }));
     patchTask(taskId, updates)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
         refreshScores();
         refreshLeaderboard();
@@ -871,7 +879,7 @@ export default function App() {
     updateOrbitState(current => ({ ...current, tasks: current.tasks.filter(task => task.id !== taskId) }));
     deleteTask(taskId)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
         refreshSuggestions();
         refreshScores();
@@ -885,7 +893,7 @@ export default function App() {
     if (!noteDraft.title.trim()) return;
     createNote(noteDraft)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setSelectedNoteId(state.notes[0]?.id ?? null);
         setBackendStatus('online');
         setNoteDraft({ title: '', body: '', tag: 'Note' });
@@ -894,23 +902,39 @@ export default function App() {
   };
 
   const updateNote = (noteId, updates) => {
+    setNoteSaveStatus('saving');
     updateOrbitState(current => ({
       ...current,
       notes: current.notes.map(note => (note.id === noteId ? { ...note, ...updates } : note))
     }));
-    patchNote(noteId, updates)
-      .then(state => {
-        setOrbitState(state);
-        setBackendStatus('online');
-      })
-      .catch(() => setBackendStatus('offline'));
+    const previous = noteEdits.current.get(noteId);
+    clearTimeout(previous?.timer);
+    const edit = { updates: { ...previous?.updates, ...updates }, timer: null };
+    noteEdits.current.set(noteId, edit);
+    edit.timer = window.setTimeout(() => {
+      edit.timer = null;
+      patchNote(noteId, edit.updates)
+        .then(state => {
+          if (noteEdits.current.get(noteId) === edit) noteEdits.current.delete(noteId);
+          if (!noteEdits.current.size) setNoteSaveStatus('saved');
+          applyRemoteState(state);
+          setBackendStatus('online');
+        })
+        .catch(() => {
+          setBackendStatus('offline');
+          setNoteSaveStatus('unsaved');
+          setNotice('Your latest note changes have not saved. Keep this page open and edit again to retry.');
+        });
+    }, 450);
   };
 
   const removeNote = noteId => {
+    clearTimeout(noteEdits.current.get(noteId)?.timer);
+    noteEdits.current.delete(noteId);
     updateOrbitState(current => ({ ...current, notes: current.notes.filter(note => note.id !== noteId) }));
     deleteNote(noteId)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
       })
       .catch(() => setBackendStatus('offline'));
@@ -921,7 +945,7 @@ export default function App() {
     if (!eventDraft.title.trim()) return;
     createEvent(eventDraft)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
         setEventDraft(current => ({ ...current, title: '', notes: '' }));
         refreshSuggestions();
@@ -936,7 +960,7 @@ export default function App() {
     }));
     patchEvent(eventId, updates)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
       })
       .catch(() => setBackendStatus('offline'));
@@ -946,7 +970,7 @@ export default function App() {
     updateOrbitState(current => ({ ...current, events: current.events.filter(item => item.id !== eventId) }));
     deleteEvent(eventId)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
         refreshSuggestions();
       })
@@ -958,7 +982,7 @@ export default function App() {
     if (!routineDraft.title.trim()) return;
     createRoutine(routineDraft)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
         setRoutineDraft({ title: '', cadence: 'Daily', anchor: 'Anytime' });
         refreshSuggestions();
@@ -973,7 +997,7 @@ export default function App() {
     }));
     patchRoutine(routineId, updates)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
       })
       .catch(() => setBackendStatus('offline'));
@@ -983,7 +1007,7 @@ export default function App() {
     updateOrbitState(current => ({ ...current, routines: current.routines.filter(routine => routine.id !== routineId) }));
     deleteRoutine(routineId)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
         refreshSuggestions();
       })
@@ -992,7 +1016,7 @@ export default function App() {
 
   const toggleFocus = () => {
     if (!focus.running) {
-      setFocus(current => ({ ...current, running: true }));
+      focusDeadline.current = null;
       startFocusSession()
         .then(payload => {
           setOrbitState(payload.state);
@@ -1005,17 +1029,18 @@ export default function App() {
     setFocus(nextFocus);
     patchFocusRemote(nextFocus)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
       })
       .catch(() => setBackendStatus('offline'));
   };
 
   const resetFocus = () => {
+    focusDeadline.current = null;
     setFocus(current => ({ ...current, running: false, secondsLeft: 25 * 60 }));
     resetFocusTimer()
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
       })
       .catch(() => setBackendStatus('offline'));
@@ -1025,7 +1050,7 @@ export default function App() {
     event.preventDefault();
     patchProfile(profileDraft)
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
         refreshScores();
         refreshLeaderboard();
@@ -1038,7 +1063,7 @@ export default function App() {
     updateOrbitState(current => ({ ...current, theme: nextTheme }));
     patchPreferences({ theme: nextTheme })
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
       })
       .catch(() => setBackendStatus('offline'));
@@ -1056,7 +1081,7 @@ export default function App() {
       notes: 'Auto-planned from Orbit focus protocol.'
     })
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
         handleNavigate('Calendar');
       })
@@ -1073,7 +1098,7 @@ export default function App() {
       notes: 'Step away, hydrate, reset attention.'
     })
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setBackendStatus('online');
         handleNavigate('Calendar');
       })
@@ -1087,7 +1112,7 @@ export default function App() {
       body: 'Closed loops:\nTomorrow first task:\nLoose ends parked:'
     })
       .then(state => {
-        setOrbitState(state);
+        applyRemoteState(state);
         setSelectedNoteId(state.notes[0]?.id ?? null);
         setBackendStatus('online');
         handleNavigate('Notes');
@@ -1105,6 +1130,9 @@ export default function App() {
       <OnboardingScreen
         theme={theme}
         backendStatus={backendStatus}
+        busy={authBusy || backendStatus === 'loading'}
+        googleReady={googleReady}
+        notice={notice}
         onGoogleLogin={handleGoogleLogin}
         onGuestLogin={handleGuestLogin}
       />
@@ -1112,22 +1140,12 @@ export default function App() {
   }
 
   return (
-    <div className="app-shell">
+    <div className="app-shell structured-shell">
       <AmbientLayer theme={theme} />
-      <CardNav
-        className="orbit-card-nav"
-        items={NAV_ITEMS}
-        activeView={activeView}
-        onNavigate={handleNavigate}
-        onQuickCapture={() => inputRef.current?.focus()}
-        baseColor="color-mix(in srgb, var(--panel) 30%, transparent)"
-        menuColor="var(--text)"
-        buttonBgColor="color-mix(in srgb, var(--panel-strong) 42%, transparent)"
-        buttonTextColor="var(--text)"
-      />
-      <Dock items={dockItems} className="orbit-dock" {...dockSizing} />
+      <WorkspaceNav activeView={activeView} onNavigate={handleNavigate} currentUser={currentUser} onGoogleLogin={handleGoogleLogin} googleReady={googleReady} />
 
-      <main className="orbit-workspace">
+      <main className="orbit-workspace" id="workspace-content">
+        {notice ? <div className="app-notice" role="alert"><span>{notice}</span><button type="button" aria-label="Dismiss message" onClick={() => setNotice('')}>Dismiss</button></div> : null}
         <TopConsole
           backendStatus={backendStatus}
           inputRef={inputRef}
@@ -1141,7 +1159,7 @@ export default function App() {
         />
 
         <section className="orbit-stage">
-          <div className="workspace-panel glass-panel">
+          <div className="workspace-panel">
             <ActivePage
               activeView={activeView}
               tasks={tasks}
@@ -1181,6 +1199,7 @@ export default function App() {
               selectedNote={selectedNote}
               taskDraft={taskDraft}
               noteDraft={noteDraft}
+              noteSaveStatus={noteSaveStatus}
               eventDraft={eventDraft}
               routineDraft={routineDraft}
               completion={completion}
@@ -1197,6 +1216,7 @@ export default function App() {
               onJoinCodeDraftChange={setJoinCodeDraft}
               onActiveGroupChange={setActiveGroupId}
               onCreateTask={createTaskFromDraft}
+              onQuickAdd={addTask}
               onCreateNote={createNoteFromDraft}
               onCreateEvent={createEventFromDraft}
               onCreateRoutine={createRoutineFromDraft}
@@ -1223,7 +1243,7 @@ export default function App() {
               onDeleteRoutine={removeRoutine}
               onFocusChange={nextFocus => {
                 setFocus(nextFocus);
-                patchFocusRemote(nextFocus).then(setOrbitState).catch(() => setBackendStatus('offline'));
+                patchFocusRemote(nextFocus).then(applyRemoteState).catch(() => setBackendStatus('offline'));
               }}
               onToggleFocus={toggleFocus}
               onResetFocus={resetFocus}
@@ -1250,12 +1270,8 @@ export default function App() {
 
 function LegalStrip() {
   return (
-    <footer className="legal-strip" aria-label="Orbit legal links">
-      <span>Orbit Social Lock-In</span>
-      <a href="#terms">Terms of Service</a>
-      <a href="#privacy">Privacy</a>
-      <a href="#security">Security</a>
-      <span>Fair-play scoring, cookie sessions, group-visible handles.</span>
+    <footer className="legal-strip">
+      <span>Orbit · Built for steady progress</span>
     </footer>
   );
 }
@@ -1280,20 +1296,8 @@ function TopConsole({ backendStatus, inputRef, query, setQuery, onSubmit, onTogg
     <section className="top-console glass-panel">
       <div className="console-brand">
         <span className={`status-dot ${backendStatus}`} title={`Backend ${backendStatus}`} />
-        <span className="brand-orbit">Orbit</span>
-        <small>{todayLabel()}</small>
+        <span className="workspace-date">{new Intl.DateTimeFormat('en', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())}</span>
       </div>
-      <form className="command-bar" onSubmit={onSubmit}>
-        <Search size={18} aria-hidden="true" />
-        <input
-          ref={inputRef}
-          value={query}
-          onChange={event => setQuery(event.target.value)}
-          placeholder="Capture a task, search, or add ! for priority"
-          aria-label="Search or quick capture"
-        />
-        <kbd>Enter</kbd>
-      </form>
       <div className="console-actions">
         <button type="button" className="icon-button" onClick={onToggleTheme} aria-label="Toggle theme">
           {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
@@ -1307,7 +1311,7 @@ function TopConsole({ backendStatus, inputRef, query, setQuery, onSubmit, onTogg
   );
 }
 
-function OnboardingScreen({ theme, onGoogleLogin, onGuestLogin }) {
+function OnboardingScreen({ theme, onGoogleLogin, onGuestLogin, backendStatus, busy, googleReady, notice }) {
   return (
     <div className="app-shell onboarding-shell">
       <AmbientLayer theme={theme} />
@@ -1333,15 +1337,18 @@ function OnboardingScreen({ theme, onGoogleLogin, onGuestLogin }) {
           </div>
         </div>
         <div className="auth-actions-panel">
+          <h2>Your next focused day starts here.</h2>
+          {notice ? <p className="auth-message" role="alert">{notice}</p> : null}
+          {backendStatus === 'offline' ? <p className="auth-message" role="status">Orbit could not reach the server. Please try again.</p> : null}
           <BorderGlow className="action-glow fill static-glow" colors={['#8b5cf6', '#c4b5fd', '#8dd8c8']} glowColor="260 72 72">
-            <button type="button" className="primary-button google-button" onClick={onGoogleLogin}>
+            <button type="button" className="primary-button google-button" disabled={busy || googleReady !== true} onClick={onGoogleLogin}>
               <LogIn size={16} /> Continue with Google
             </button>
           </BorderGlow>
-          <button type="button" className="secondary-button guest-button" onClick={onGuestLogin}>
-            <UserRound size={16} /> Continue as guest
+          <button type="button" className="secondary-button guest-button" disabled={busy} onClick={onGuestLogin}>
+            <UserRound size={16} /> {busy ? 'Opening your workspace…' : 'Continue as guest'}
           </button>
-          <p className="backend-note">Guest sessions receive a unique handle and can be upgraded later.</p>
+          <p className="backend-note">{googleReady === false ? 'Google sign-in is unavailable right now. Try Orbit as a guest.' : 'Try Orbit as a guest. Link a new Google account later to keep your workspace across devices.'}</p>
         </div>
       </section>
     </div>
@@ -1357,126 +1364,7 @@ function ActivePage(props) {
   if (activeView === 'Groups') return <GroupsPage {...props} />;
   if (activeView === 'Score') return <ScorePage {...props} />;
   if (activeView === 'Profile') return <ProfilePage {...props} />;
-  return <TodayPage {...props} />;
-}
-
-function TodayPage({
-  openTasks,
-  routines,
-  todayEvents,
-  notes,
-  suggestions,
-  completion,
-  routineCompletion,
-  focus,
-  focusProgress,
-  currentScore,
-  activeGroup,
-  myRank,
-  nextEvent,
-  focusGap,
-  recoveryPressure,
-  onNavigate,
-  onToggleTask,
-  onUpdateRoutine,
-  onProtectFocus,
-  onRecoveryBuffer,
-  onShutdownNote,
-  onToggleFocus,
-  onResetFocus
-}) {
-  const primarySuggestion = suggestions[0];
-  const latestNote = notes[0];
-
-  return (
-    <div className="page-surface today-page refined-home">
-      <PageHeader
-        icon={<Home size={18} />}
-        title="Lock-in desk"
-        copy="Today is about one honest score: finish useful work, start real focus, and climb with your group."
-        action={<IconButton icon={<Timer size={16} />} label={focus.running ? 'Pause focus' : 'Start focus'} onClick={onToggleFocus} />}
-      />
-      <div className="home-summary-strip">
-        <BorderGlow className="metric-glow static-glow" colors={['#8b5cf6', '#c4b5fd', '#8dd8c8']} glowColor="260 72 72">
-          <Metric icon={<Trophy size={21} />} label="Lock-in score" value={`${currentScore.score}`} tone="violet" onClick={() => onNavigate('Score')} />
-        </BorderGlow>
-        <BorderGlow className="metric-glow metric-glow-rank static-glow" colors={['#8dd8c8', '#c4b5fd', '#6b7280']} glowColor="166 55 70">
-          <Metric icon={<Medal size={21} />} label={activeGroup ? activeGroup.name : 'Global rank'} value={myRank ? `#${myRank}` : '--'} tone="mint" onClick={() => onNavigate('Groups')} />
-        </BorderGlow>
-        <BorderGlow className="metric-glow metric-glow-muted static-glow" colors={['#6b7280', '#8b5cf6', '#c4b5fd']} glowColor="252 36 64">
-          <Metric icon={<Target size={21} />} label="Task progress" value={`${completion}%`} tone="slate" onClick={() => onNavigate('Tasks')} />
-        </BorderGlow>
-      </div>
-      <div className="home-command-grid">
-        <section className="desk-panel home-plan-panel">
-          <SectionTitle icon={<Clock3 size={17} />} title="Day plan" action={<button type="button" onClick={() => onNavigate('Calendar')}>Open calendar</button>} />
-          <p className="panel-note">{nextEvent ? `Next block: ${nextEvent.title} at ${nextEvent.start}. Tap the planner to edit details.` : 'Build a clean day plan from focus, recovery, and personal blocks.'}</p>
-          <PlannerCanvas events={todayEvents} onNavigate={onNavigate} />
-        </section>
-
-        <section className="desk-panel home-focus-panel">
-          <SectionTitle icon={<Timer size={17} />} title="Validated focus" action={<button type="button" onClick={onProtectFocus}>Schedule block</button>} />
-          <p className="panel-note">{currentScore.validFocusMinutes} valid minutes logged. {focusGap ? `${focusGap} block${focusGap === 1 ? '' : 's'} left for the daily goal.` : 'Daily goal is protected.'}</p>
-          <FocusReactor focus={focus} focusProgress={focusProgress} />
-          <div className="focus-actions home-focus-actions">
-            <BorderGlow className="action-glow fill static-glow" colors={['#8b5cf6', '#c4b5fd', '#6b7280']} glowColor="260 72 72">
-              <button type="button" className="primary-button" onClick={onToggleFocus}>
-                {focus.running ? 'Pause focus' : 'Start focus'}
-              </button>
-            </BorderGlow>
-            <button type="button" className="secondary-button" onClick={onResetFocus}>Reset</button>
-          </div>
-          {primarySuggestion ? (
-            <button type="button" className="mini-suggestion" onClick={() => onNavigate('Score')}>
-              <span>{primarySuggestion.signal}</span>
-              <strong>{primarySuggestion.title}</strong>
-              <em>{primarySuggestion.meta}</em>
-            </button>
-          ) : null}
-        </section>
-
-        <section className="desk-panel home-task-panel">
-          <SectionTitle icon={<ListTodo size={17} />} title="Priority queue" action={<button type="button" onClick={() => onNavigate('Tasks')}>Edit</button>} />
-          <p className="panel-note">Only the first open loops live here. Full sorting and editing stays on Tasks.</p>
-          {openTasks.length ? (
-            <AnimatedList
-              items={openTasks.slice(0, 5)}
-              className="home-task-list"
-              displayScrollbar={false}
-              showGradients={false}
-              onItemSelect={task => onToggleTask(task.id)}
-              renderItem={task => <TaskRow task={task} onToggle={() => onToggleTask(task.id)} />}
-            />
-          ) : (
-            <EmptyState icon={<CheckCircle2 size={24} />} title="Nothing open" copy="Add a task from the command bar or Tasks page." />
-          )}
-        </section>
-
-        <section className="desk-panel home-ritual-panel">
-          <SectionTitle icon={<Sparkles size={17} />} title="Rituals" action={<button type="button" onClick={onShutdownNote}>Shutdown note</button>} />
-          <p className="panel-note">Small guardrails for work-life balance: start clean, recover early, end deliberately.</p>
-          <div className="ritual-stack">
-            {routines.slice(0, 3).map(routine => (
-              <RoutineRow key={routine.id} routine={routine} onToggle={() => onUpdateRoutine(routine.id, { done: !routine.done })} />
-            ))}
-          </div>
-          <div className="home-ritual-actions">
-            <button type="button" className="quiet-action" onClick={onRecoveryBuffer}><Coffee size={15} /> Add recovery buffer</button>
-            <button type="button" className="quiet-action" onClick={() => onNavigate('Focus')}><ShieldCheck size={15} /> Edit rituals</button>
-          </div>
-          {latestNote ? (
-            <button type="button" className="home-note-snapshot" onClick={() => onNavigate('Notes')}>
-              <NotebookPen size={16} />
-              <span>
-                <em>Latest note</em>
-                <strong>{latestNote.title}</strong>
-              </span>
-            </button>
-          ) : null}
-        </section>
-      </div>
-    </div>
-  );
+  return <TodayDashboard {...props} reactor={<FocusReactor focus={props.focus} focusProgress={props.focusProgress} />} />;
 }
 
 function TasksPage({
@@ -1541,7 +1429,8 @@ function NotesPage({
   onCreateNote,
   onSelectNote,
   onUpdateNote,
-  onDeleteNote
+  onDeleteNote,
+  noteSaveStatus
 }) {
   return (
     <div className="page-surface">
@@ -1583,7 +1472,7 @@ function NotesPage({
                 <button type="button" className="icon-danger" onClick={() => onDeleteNote(selectedNote.id)}><Trash2 size={16} /> Delete</button>
               </div>
               <label className="form-field editor-body-field">
-                <span>Body</span>
+                <span>Body <small className="note-save-status" role="status">{noteSaveStatus === 'saving' ? 'Saving…' : noteSaveStatus === 'unsaved' ? 'Changes not saved' : 'All changes saved'}</small></span>
                 <textarea value={selectedNote.body} onChange={event => onUpdateNote(selectedNote.id, { body: event.target.value })} placeholder="Write the thought clearly." />
               </label>
             </>
@@ -1608,17 +1497,18 @@ function CalendarPage({
   onProtectFocus,
   onRecoveryBuffer
 }) {
+  const [selectedDate, setSelectedDate] = useState(TODAY);
   const [selectedEventId, setSelectedEventId] = useState(null);
   const selectedEvent = events.find(event => event.id === selectedEventId) ?? null;
   const [detailDraft, setDetailDraft] = useState(selectedEvent);
-  const visibleEvents = sortedEvents(todayEvents);
+  const visibleEvents = sortedEvents(events.filter(event => event.date === selectedDate));
   const scheduledMinutes = visibleEvents.reduce((total, event) => total + eventDurationMinutes(event), 0);
   const firstBlock = visibleEvents[0]?.start ?? '--';
   const lastBlock = visibleEvents[visibleEvents.length - 1]?.end ?? '--';
 
   useEffect(() => {
     setDetailDraft(selectedEvent);
-  }, [selectedEvent]);
+  }, [selectedEvent?.id]);
 
   const saveDetail = event => {
     event.preventDefault();
@@ -1636,9 +1526,9 @@ function CalendarPage({
       />
       <div className="calendar-workspace">
         <section className="desk-panel calendar-timeline-panel">
-          <SectionTitle icon={<Clock3 size={17} />} title="Today timeline" action={<button type="button" onClick={onRecoveryBuffer}>Add buffer</button>} />
+          <SectionTitle icon={<Clock3 size={17} />} title="Day timeline" action={<label className="calendar-date-picker"><span className="sr-only">View date</span><input type="date" aria-label="View date" value={selectedDate} onChange={event => { if (event.target.value) { setSelectedDate(event.target.value); setSelectedEventId(null); onEventDraftChange(current => ({ ...current, date: event.target.value })); } }} /></label>} />
           <div className="calendar-stats-row">
-            <CalendarStat label="Day" value={dateLabel(TODAY)} />
+            <CalendarStat label="Day" value={dateLabel(selectedDate)} />
             <CalendarStat label="Scheduled" value={durationLabel(scheduledMinutes)} />
             <CalendarStat label="Window" value={`${firstBlock}-${lastBlock}`} />
           </div>
@@ -2238,74 +2128,6 @@ function ProfilePage({ profile, currentUser, authInfo, sessionInfo, activeGroup,
   );
 }
 
-function TodayRail({ focus, focusProgress, activeStrands, suggestions, routines, onToggleFocus, onResetFocus, onUpdateRoutine, onProtectFocus, onRecoveryBuffer }) {
-  return (
-    <aside className="today-rail">
-      <section className="focus-card glass-panel">
-        <FocusReactor focus={focus} focusProgress={focusProgress} strands={activeStrands} />
-        <div className="focus-actions">
-          <BorderGlow className="action-glow fill static-glow" colors={['#8b5cf6', '#c4b5fd', '#6b7280']} glowColor="260 72 72">
-            <button type="button" className="primary-button" onClick={onToggleFocus}>
-              {focus.running ? 'Pause focus' : 'Start focus'}
-            </button>
-          </BorderGlow>
-          <button type="button" className="secondary-button" onClick={onResetFocus}>Reset</button>
-        </div>
-      </section>
-      <section className="suggestions-card glass-panel">
-        <SectionTitle icon={<Zap size={17} />} title="Smart moves" />
-        <AnimatedList items={suggestions} className="suggestion-list" displayScrollbar={false} showGradients={false} renderItem={suggestion => <SuggestionRow suggestion={suggestion} />} />
-        <div className="rail-actions">
-          <button type="button" onClick={onProtectFocus}>Schedule focus</button>
-          <button type="button" onClick={onRecoveryBuffer}>Buffer</button>
-        </div>
-      </section>
-      <section className="ritual-card glass-panel">
-        <SectionTitle icon={<Sparkles size={17} />} title="Rituals" />
-        <div className="ritual-stack">
-          {routines.slice(0, 3).map(routine => (
-            <RoutineRow key={routine.id} routine={routine} onToggle={() => onUpdateRoutine(routine.id, { done: !routine.done })} />
-          ))}
-        </div>
-      </section>
-    </aside>
-  );
-}
-
-function FeatureGuide() {
-  const items = [
-    {
-      icon: <Clock3 size={16} />,
-      title: 'Time blocks',
-      copy: 'Calendar events become planner rows so you see the day as protected attention, not a list.'
-    },
-    {
-      icon: <Sparkles size={16} />,
-      title: 'Rituals',
-      copy: 'Morning, midday, and shutdown habits keep work from leaking into the rest of life.'
-    },
-    {
-      icon: <Zap size={16} />,
-      title: 'Smart moves',
-      copy: 'Orbit suggests one practical next action: focus, recover, convert notes, or close the day.'
-    }
-  ];
-
-  return (
-    <div className="feature-guide">
-      {items.map(item => (
-        <article key={item.title}>
-          <span>{item.icon}</span>
-          <div>
-            <strong>{item.title}</strong>
-            <p>{item.copy}</p>
-          </div>
-        </article>
-      ))}
-    </div>
-  );
-}
-
 function FocusReactor({ focus, focusProgress, strands = STRAND_COLORS.dark }) {
   return (
     <div className="focus-reactor" style={{ '--progress': `${focusProgress}%` }}>
@@ -2405,29 +2227,6 @@ function CalendarDayCanvas({ events, selectedEventId, onSelectEvent }) {
   );
 }
 
-function PlannerCanvas({ events, onNavigate }) {
-  return (
-    <div className="planner-canvas">
-      {TIME_SLOTS.map(slot => {
-        const slotEvents = events.filter(event => event.start.slice(0, 2) === slot.slice(0, 2));
-        return (
-          <button type="button" className="time-row" key={slot} onClick={() => onNavigate?.('Calendar')}>
-            <span className="time-label">{slot}</span>
-            <span className="time-track">
-              {slotEvents.length ? slotEvents.map(event => (
-                <span className={`event-chip type-${event.type.toLowerCase()}`} key={event.id}>
-                  <strong>{event.title}</strong>
-                  <em>{event.start}-{event.end}</em>
-                </span>
-              )) : <span className="empty-slot" />}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 function PageHeader({ icon, title, copy, action }) {
   return (
     <div className="page-header">
@@ -2518,8 +2317,8 @@ function EditableTask({ task, onToggle, onUpdate, onDelete }) {
       <button type="button" className="check-button" onClick={() => onToggle(task.id)} aria-label={`Toggle ${task.title}`}>
         <CheckCircle2 size={18} />
       </button>
-      <input aria-label="Task title" value={task.title} onChange={event => onUpdate(task.id, { title: event.target.value })} />
-      <input aria-label="Task context" value={task.meta} onChange={event => onUpdate(task.id, { meta: event.target.value })} />
+      <InlineInput aria-label="Task title" value={task.title} required onCommit={title => onUpdate(task.id, { title })} />
+      <InlineInput aria-label="Task context" value={task.meta} onCommit={meta => onUpdate(task.id, { meta })} />
       <input aria-label="Task due date" type="date" value={task.date || ''} onChange={event => onUpdate(task.id, { date: event.target.value })} />
       <select aria-label="Task priority" value={task.priority} onChange={event => onUpdate(task.id, { priority: event.target.value })}>
         <option>New</option>
@@ -2528,35 +2327,8 @@ function EditableTask({ task, onToggle, onUpdate, onDelete }) {
         <option>Medium</option>
         <option>Low</option>
       </select>
-      <button type="button" className="icon-danger" onClick={() => onDelete(task.id)}><Trash2 size={16} /></button>
+      <button type="button" className="icon-danger" aria-label={`Delete ${task.title}`} onClick={() => onDelete(task.id)}><Trash2 size={16} /></button>
     </article>
-  );
-}
-
-function TaskRow({ task, onToggle }) {
-  return (
-    <div className={`task-row accent-${task.accent} ${task.done ? 'done' : ''}`}>
-      <button type="button" className="check-button" onClick={event => { event.stopPropagation(); onToggle(); }} aria-label={`Mark ${task.title}`}>
-        <CheckCircle2 size={18} />
-      </button>
-      <div className="task-main">
-        <strong>{task.title}</strong>
-        <span>{task.meta} / {task.time}</span>
-      </div>
-      <span className="priority-chip">{task.priority}</span>
-    </div>
-  );
-}
-
-function RoutineRow({ routine, onToggle }) {
-  return (
-    <button type="button" className={`routine-row ${routine.done ? 'done' : ''}`} onClick={onToggle}>
-      <CheckCircle2 size={17} />
-      <span>
-        <strong>{routine.title}</strong>
-        <em>{routine.cadence} / {routine.anchor}</em>
-      </span>
-    </button>
   );
 }
 
@@ -2587,32 +2359,16 @@ function LeaderboardRow({ row, active }) {
 function EditableRoutine({ routine, onUpdate, onDelete }) {
   return (
     <article className={`editable-routine ${routine.done ? 'done' : ''}`}>
-      <button type="button" className="check-button" onClick={() => onUpdate(routine.id, { done: !routine.done })}><CheckCircle2 size={17} /></button>
-      <input aria-label="Routine title" value={routine.title} onChange={event => onUpdate(routine.id, { title: event.target.value })} />
-      <input aria-label="Routine anchor" value={routine.anchor} onChange={event => onUpdate(routine.id, { anchor: event.target.value })} />
+      <button type="button" className="check-button" aria-label={`Toggle ${routine.title}`} onClick={() => onUpdate(routine.id, { done: !routine.done })}><CheckCircle2 size={17} /></button>
+      <InlineInput aria-label="Routine title" value={routine.title} required onCommit={title => onUpdate(routine.id, { title })} />
+      <InlineInput aria-label="Routine anchor" value={routine.anchor} onCommit={anchor => onUpdate(routine.id, { anchor })} />
       <select aria-label="Routine cadence" value={routine.cadence} onChange={event => onUpdate(routine.id, { cadence: event.target.value })}>
         <option>Morning</option>
         <option>Midday</option>
         <option>Evening</option>
         <option>Daily</option>
       </select>
-      <button type="button" className="icon-danger" onClick={() => onDelete(routine.id)}><Trash2 size={16} /></button>
-    </article>
-  );
-}
-
-function EditableEvent({ event, selected, onUpdate, onDelete }) {
-  return (
-    <article className={`event-editor type-${event.type.toLowerCase()} ${selected ? 'selected' : ''}`}>
-      <input aria-label="Event title" value={event.title} onChange={change => onUpdate(event.id, { title: change.target.value })} />
-      <input aria-label="Event date" type="date" value={event.date} onChange={change => onUpdate(event.id, { date: change.target.value })} />
-      <input aria-label="Event start time" type="time" value={event.start} onChange={change => onUpdate(event.id, { start: change.target.value })} />
-      <input aria-label="Event end time" type="time" value={event.end} onChange={change => onUpdate(event.id, { end: change.target.value })} />
-      <select aria-label="Event type" value={event.type} onChange={change => onUpdate(event.id, { type: change.target.value })}>
-        {EVENT_TYPES.map(type => <option key={type}>{type}</option>)}
-      </select>
-      <button type="button" className="icon-danger" onClick={() => onDelete(event.id)}><Trash2 size={16} /></button>
-      <textarea aria-label="Event notes" value={event.notes} onChange={change => onUpdate(event.id, { notes: change.target.value })} placeholder="Notes" />
+      <button type="button" className="icon-danger" aria-label={`Delete ${routine.title}`} onClick={() => onDelete(routine.id)}><Trash2 size={16} /></button>
     </article>
   );
 }
@@ -2624,16 +2380,6 @@ function NoteIndexRow({ note, active }) {
       <strong>{note.title}</strong>
       <p>{note.body || 'No body yet'}</p>
     </div>
-  );
-}
-
-function NoteMini({ note }) {
-  return (
-    <article className="note-mini">
-      <span>{note.tag}</span>
-      <strong>{note.title}</strong>
-      <p>{note.body || 'Empty note'}</p>
-    </article>
   );
 }
 
