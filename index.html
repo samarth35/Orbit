@@ -7,9 +7,32 @@
     <meta name="description" content="Plan your day, capture ideas, and focus together with Orbit." />
     <link rel="icon" href="/orbit.svg" type="image/svg+xml" />
     <title>Orbit — Your focus, in motion</title>
+    <style>
+      body { margin: 0; background: #08070c; color: #f8f6ff; }
+      .workspace-recovery { min-height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; font-family: system-ui, sans-serif; }
+      .workspace-recovery h1 { max-width: 620px; font-size: 28px; }
+      .workspace-recovery p { color: #aaa3b8; line-height: 1.6; }
+      .workspace-recovery button { border: 1px solid #a78bfa; border-radius: 8px; padding: 12px 18px; background: #35234f; color: #f8f6ff; cursor: pointer; font: inherit; }
+      .workspace-recovery button[hidden] { display: none; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"><main class="workspace-recovery"><h1>Orbit</h1><p id="orbit-boot-message">Opening your workspace…</p><button id="orbit-boot-reload" type="button" hidden>Reload workspace</button><noscript>Enable JavaScript to open your workspace.</noscript></main></div>
+    <script>
+      document.getElementById('orbit-boot-reload').addEventListener('click', function () {
+        var url = new URL(window.location.href);
+        url.searchParams.set('orbit_refresh', Date.now().toString());
+        window.location.replace(url.href);
+      });
+      setTimeout(function () {
+        var message = document.getElementById('orbit-boot-message');
+        var reload = document.getElementById('orbit-boot-reload');
+        if (message && reload) {
+          message.textContent = 'Orbit could not finish loading. Reload to try again.';
+          reload.hidden = false;
+        }
+      }, 8000);
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

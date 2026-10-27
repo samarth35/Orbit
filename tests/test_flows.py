@@ -128,6 +128,21 @@ def test_api_misses_are_json_and_handle_signup_is_retired(client):
     assert client.post("/api/auth/handle", json={"handle": "no-recovery"}).status_code == 410
 
 
+def test_app_html_does_not_reuse_build_archive_etags(client, tmp_path, monkeypatch):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text('<html><script src="/assets/current.js"></script></html>')
+    monkeypatch.setattr(main, "DIST_ROOT", dist)
+    response = client.get("/tasks", headers={"If-None-Match": '"old-build"', "If-Modified-Since": "Sat, 20 Oct 2018 01:46:40 GMT"})
+    assert response.status_code == 200
+    assert "no-store" in response.headers["cache-control"]
+    assert "etag" not in response.headers
+    assert "last-modified" not in response.headers
+    assert "/assets/current.js" in response.text
+    assert client.get("/index.html").headers["cache-control"] == response.headers["cache-control"]
+    assert client.get("/missing-old-bundle.js").status_code == 404
+
+
 def test_calendar_validates_time_and_saves_future_days(client):
     guest(client)
     event = {"title": "Future focus block", "date": "2026-12-02", "start": "10:00", "end": "09:00"}

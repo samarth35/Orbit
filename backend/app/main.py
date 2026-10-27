@@ -6,7 +6,7 @@ import hmac
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import cookie_secure, database_url, load_dotenv, oauth_env, public_base_url, validate_deployment
@@ -63,6 +63,11 @@ app.add_middleware(
 SESSION_COOKIE = "orbit_session"
 CSRF_COOKIE = "orbit_csrf"
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+HTML_CACHE_HEADERS = {
+    "Cache-Control": "no-store, max-age=0",
+    "CDN-Cache-Control": "no-store",
+    "Vercel-CDN-Cache-Control": "no-store",
+}
 
 if (DIST_ROOT / "assets").exists():
     app.mount("/assets", StaticFiles(directory=DIST_ROOT / "assets"), name="assets")
@@ -440,10 +445,17 @@ def serve_app(full_path: str):
         raise HTTPException(status_code=404, detail="API route not found")
     requested = (DIST_ROOT / full_path).resolve()
     if DIST_ROOT.exists() and requested.is_file() and DIST_ROOT in requested.parents:
+        if requested.suffix == ".html":
+            return HTMLResponse(requested.read_text(encoding="utf-8"), headers=HTML_CACHE_HEADERS)
         return FileResponse(requested)
+
+    if Path(full_path).suffix:
+        raise HTTPException(status_code=404, detail="Asset not found")
 
     index = DIST_ROOT / "index.html"
     if index.exists():
-        return FileResponse(index)
+        # Build archives normalize mtimes, so FileResponse's mtime/size ETag can
+        # remain identical when the HTML points to different hashed assets.
+        return HTMLResponse(index.read_text(encoding="utf-8"), headers=HTML_CACHE_HEADERS)
 
     return {"error": "Run npm run build before starting Orbit."}

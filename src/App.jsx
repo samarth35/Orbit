@@ -189,6 +189,14 @@ function readCachedState() {
   return createDefaultState();
 }
 
+function clearLegacyCache() {
+  try {
+    window.localStorage.removeItem(FALLBACK_CACHE_KEY);
+  } catch {
+    // Storage may be disabled by the browser; the server owns account data.
+  }
+}
+
 function resolveUpdater(updater, current) {
   return typeof updater === 'function' ? updater(current) : updater;
 }
@@ -323,7 +331,7 @@ export default function App() {
       if (event.detail.status === 401) {
         setCurrentUser(null);
         setOrbitState(createDefaultState());
-        window.localStorage.removeItem(FALLBACK_CACHE_KEY);
+        clearLegacyCache();
       }
     };
     window.addEventListener('orbit:request-error', onError);
@@ -464,7 +472,7 @@ export default function App() {
 
   useEffect(() => {
     // Account data belongs to the authenticated server session, not a shared browser cache.
-    window.localStorage.removeItem(FALLBACK_CACHE_KEY);
+    clearLegacyCache();
   }, []);
 
   useEffect(() => {
@@ -668,7 +676,7 @@ export default function App() {
         setOrbitState(createDefaultState());
         setScores(EMPTY_SCORE_SUMMARY);
         setNotice('');
-        window.localStorage.removeItem(FALLBACK_CACHE_KEY);
+        clearLegacyCache();
       })
       .catch(() => setNotice('Sign out could not finish. Please try again.'));
   };
